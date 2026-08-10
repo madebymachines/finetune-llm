@@ -2,6 +2,8 @@ streamlit>=1.38
 pandas
 openpyxl
 Pillow
+pypdf
+python-docx
 
 # Unsloth + finetuning stack (mirrors Unsloth's Gemma4 (E4B) Text/Vision/Audio notebooks)
 # NOTE: requires a CUDA GPU. Install torch matching your CUDA version first if

@@ -18,6 +18,7 @@ from src.data_utils import (
     build_vision_messages_from_hf,
     build_vision_messages_from_upload,
     conversations_to_dataset,
+    extract_text_from_document,
     load_audio_array,
     load_hf_dataset,
     looks_like_sharegpt,
@@ -38,6 +39,10 @@ from src.train_utils import (
 
 st.set_page_config(page_title="Gemma-4 Finetune Studio", layout="wide")
 
+
+def _use_extracted_text_as_system():
+    st.session_state["text_system_template"] = st.session_state.get("_extracted_doc_text", "")
+
 SCRATCH_DIR = "/tmp/gemma4_finetune_studio"
 
 # ---------------------------------------------------------------------------
@@ -55,6 +60,7 @@ defaults = {
     "start_gpu_mem": None,
     "eval_log": [],
     "chat_history": [],
+    "last_system_prompt": "",
 }
 for key, value in defaults.items():
     st.session_state.setdefault(key, value)
@@ -174,6 +180,7 @@ with tab_data:
                     ds = load_hf_dataset(hf_name, num_rows or None)
                     ds = sharegpt_df_to_dataset(ds.to_pandas()) if "conversations" in ds.column_names else ds
                 st.session_state["_raw_dataset"] = ds
+                st.session_state["last_system_prompt"] = ""
                 st.success(f"{len(ds)} baris dimuat.")
                 st.dataframe(ds.to_pandas().head())
 
@@ -196,6 +203,7 @@ with tab_data:
                     st.info("Kolom 'conversations' terdeteksi -> menggunakan format ShareGPT langsung.")
                     if st.button("Gunakan data ini"):
                         st.session_state["_raw_dataset"] = sharegpt_df_to_dataset(df)
+                        st.session_state["last_system_prompt"] = ""
                         st.success("Dataset siap.")
                 else:
                     st.markdown("**Template Builder** — petakan kolom ke percakapan training memakai `{nama_kolom}`.")
@@ -205,30 +213,78 @@ with tab_data:
                         "Contoh spreadsheet hasil konversi dokumen persona/guardrail/simulasi: "
                         "system=`{system}`, user=`{user}`, assistant=`{assistant}`."
                     )
-                    system_template = st.text_area("System / rule template (opsional)", value="")
-                    user_template = st.text_area("User message template", value="")
-                    assistant_template = st.text_area("Assistant response template", value="")
+                    with st.expander("📄 Opsional: upload dokumen persona/rule (PDF/DOCX/TXT) untuk auto-isi system template"):
+                        doc_file = st.file_uploader(
+                            "Dokumen persona/rule/guardrail",
+                            type=["pdf", "docx", "txt"],
+                            help=(
+                                "Teksnya diekstrak apa adanya (bukan di-parse jadi Q&A) dan dipakai sebagai "
+                                "system prompt yang sama untuk semua baris data CSV/Excel di atas. Kalau dialog "
+                                "contoh di dokumen ini mau jadi baris training terpisah, konversi dulu ke "
+                                "spreadsheet (kolom category/system/user/assistant)."
+                            ),
+                        )
+                        if doc_file is not None:
+                            try:
+                                extracted = extract_text_from_document(doc_file)
+                            except Exception as e:
+                                st.error(f"Gagal membaca dokumen: {e}")
+                                extracted = ""
+                            if extracted:
+                                st.session_state["_extracted_doc_text"] = extracted
+                                st.text_area("Preview teks hasil ekstraksi", extracted, height=150, disabled=True)
+                                st.button(
+                                    "Pakai teks ini sebagai System / rule template",
+                                    on_click=_use_extracted_text_as_system,
+                                )
+
+                    cols = list(df.columns)
+                    st.caption(
+                        "Kolom tersedia di data-mu: " + ", ".join(f"`{{{c}}}`" for c in cols)
+                    )
+                    user_placeholder = f"Apa itu {{{cols[0]}}}?" if cols else "Apa itu {nama_kolom}?"
+                    assistant_placeholder = f"{{{cols[1] if len(cols) > 1 else cols[0]}}}" if cols else "{nama_kolom}"
+
+                    system_template = st.text_area(
+                        "System / rule template (opsional)", key="text_system_template",
+                        placeholder="Kamu adalah asisten produk toko yang ramah.",
+                    )
+                    user_template = st.text_area("User message template", value="", placeholder=user_placeholder)
+                    assistant_template = st.text_area(
+                        "Assistant response template", value="", placeholder=assistant_placeholder
+                    )
+                    st.caption(
+                        "⚠️ Wajib diisi: User message template & Assistant response template "
+                        "(pakai placeholder di atas). Kalau dikosongkan, hasil percakapan akan kosong."
+                    )
 
                     colp, colb = st.columns(2)
                     with colp:
                         if st.button("Preview 3 contoh"):
-                            try:
-                                preview = build_conversations_from_template(
-                                    df.head(3), system_template, user_template, assistant_template
-                                )
-                                st.json(preview)
-                            except KeyError as e:
-                                st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
+                            if not user_template.strip() or not assistant_template.strip():
+                                st.warning("Isi dulu User message template dan Assistant response template.")
+                            else:
+                                try:
+                                    preview = build_conversations_from_template(
+                                        df.head(3), system_template, user_template, assistant_template
+                                    )
+                                    st.json(preview)
+                                except KeyError as e:
+                                    st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
                     with colb:
                         if st.button("Bangun dataset dari template", type="primary"):
-                            try:
-                                convos = build_conversations_from_template(
-                                    df, system_template, user_template, assistant_template
-                                )
-                                st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
-                                st.success(f"Dataset dibangun: {len(convos)} percakapan.")
-                            except KeyError as e:
-                                st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
+                            if not user_template.strip() or not assistant_template.strip():
+                                st.warning("Isi dulu User message template dan Assistant response template.")
+                            else:
+                                try:
+                                    convos = build_conversations_from_template(
+                                        df, system_template, user_template, assistant_template
+                                    )
+                                    st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
+                                    st.session_state["last_system_prompt"] = system_template
+                                    st.success(f"Dataset dibangun: {len(convos)} percakapan.")
+                                except KeyError as e:
+                                    st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
 
         st.divider()
         st.subheader("Chat template & split")
@@ -268,6 +324,7 @@ with tab_data:
                     ds = load_hf_dataset(hf_name, num_rows)
                     messages = build_vision_messages_from_hf(ds, image_column, text_column, instruction, system_prompt)
                 st.session_state["_media_messages"] = messages
+                st.session_state["last_system_prompt"] = system_prompt
                 st.success(f"{len(messages)} contoh dibangun.")
                 st.image(messages[0]["messages"][-2]["content"][-1]["image"], caption="Contoh gambar #1", width=200)
 
@@ -294,6 +351,7 @@ with tab_data:
                             files_by_name, df, filename_column, q_col, answer_column, instruction, system_prompt
                         )
                         st.session_state["_media_messages"] = messages
+                        st.session_state["last_system_prompt"] = system_prompt
                         st.success(f"{len(messages)} contoh dibangun.")
                     except KeyError as e:
                         st.error(str(e))
@@ -332,6 +390,7 @@ with tab_data:
                     ds = load_hf_dataset(hf_name, num_rows)
                     messages = build_audio_messages_from_hf(ds, audio_column, text_column, instruction, system_prompt)
                 st.session_state["_media_messages"] = messages
+                st.session_state["last_system_prompt"] = system_prompt
                 st.success(f"{len(messages)} contoh dibangun.")
 
         else:
@@ -358,6 +417,7 @@ with tab_data:
                             tmp_dir=f"{SCRATCH_DIR}/data_audio",
                         )
                         st.session_state["_media_messages"] = messages
+                        st.session_state["last_system_prompt"] = system_prompt
                         st.success(f"{len(messages)} contoh dibangun.")
                     except KeyError as e:
                         st.error(str(e))
@@ -498,7 +558,11 @@ with tab_test:
         with col4:
             top_k = st.slider("top_k", 1, 128, DEFAULT_TOP_K, 1)
         max_new_tokens = st.slider("max_new_tokens", 16, 1024, 256, 16)
-        system_prompt = st.text_input("System prompt (opsional)", value="")
+        system_prompt = st.text_input(
+            "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+            help="Default terisi dari system prompt yang dipakai waktu membangun dataset training di tab Data — "
+            "samakan dengan training supaya perilaku model konsisten.",
+        )
 
         if modality == "Text":
             for msg in st.session_state.chat_history:
@@ -585,7 +649,11 @@ with tab_eval:
     if not st.session_state.lora_applied:
         st.warning("Perlu LoRA adapter aktif untuk membandingkan base vs finetuned.")
     else:
-        system_prompt_eval = st.text_input("System prompt (opsional)", value="", key="eval_system_prompt")
+        system_prompt_eval = st.text_input(
+            "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+            key="eval_system_prompt",
+            help="Default terisi dari system prompt yang dipakai waktu membangun dataset training di tab Data.",
+        )
         compare_max_new_tokens = st.slider("max_new_tokens (compare)", 16, 512, 256, 16, key="compare_tokens")
         items = None
 

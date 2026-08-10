@@ -46,6 +46,28 @@ def read_uploaded_table(uploaded_file):
     raise ValueError(f"Format file tidak didukung: {uploaded_file.name}")
 
 
+def extract_text_from_document(uploaded_file) -> str:
+    """Extract raw text from an uploaded PDF/DOCX/TXT (persona/rule/guardrail
+    document). This is plain text extraction, not structured Q&A parsing —
+    narrative documents with numbered dialogue examples still need manual
+    conversion to a spreadsheet if those examples should become individual
+    training rows rather than just system-prompt context."""
+    name = uploaded_file.name.lower()
+    if name.endswith(".pdf"):
+        from pypdf import PdfReader
+
+        reader = PdfReader(uploaded_file)
+        return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    if name.endswith(".docx"):
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(uploaded_file)
+        return "\n".join(p.text for p in doc.paragraphs).strip()
+    if name.endswith(".txt"):
+        return uploaded_file.read().decode("utf-8").strip()
+    raise ValueError(f"Format dokumen tidak didukung: {uploaded_file.name}")
+
+
 # ---------------------------------------------------------------------------
 # Text modality: tabular data -> ShareGPT-style conversations -> "text" field
 # ---------------------------------------------------------------------------

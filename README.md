@@ -37,6 +37,9 @@ streamlit run app.py
      langsung; kalau tabular, gunakan **Template Builder** — petakan kolom apapun (data
      produk, atau spreadsheet hasil konversi dokumen instruction/rule/persona + contoh Q&A)
      ke `system` / `user` / `assistant` template memakai placeholder `{nama_kolom}`.
+     Bisa juga upload dokumen persona/rule (PDF/DOCX/TXT) sekaligus — teksnya diekstrak
+     apa adanya dan bisa langsung dipakai sebagai `system` template untuk semua baris CSV
+     (bukan parsing otomatis jadi Q&A per baris; untuk itu tetap konversi ke spreadsheet).
    - **Vision**: dataset HF Hub dengan kolom gambar+teks (default `unsloth/LaTeX_OCR`), atau
      upload banyak gambar + CSV/Excel berisi nama file, pertanyaan (opsional), dan jawaban.
    - **Audio**: dataset HF Hub dengan kolom audio+transkrip (default
