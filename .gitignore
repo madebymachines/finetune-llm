@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/
+
+# Model / training artifacts (bisa besar, jangan commit ke git)
+gemma_4_lora/
+gemma-4-finetune/
+outputs/
+*.gguf
+
+# Data files that may contain sensitive/product info — komit manual kalau memang mau disertakan
+*.csv
+*.xlsx
+*.xls
+
+# OS
+.DS_Store

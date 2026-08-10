@@ -1,0 +1,26 @@
+streamlit>=1.38
+pandas
+openpyxl
+Pillow
+
+# Unsloth + finetuning stack (mirrors Unsloth's Gemma4 (E4B) Text/Vision/Audio notebooks)
+# NOTE: requires a CUDA GPU. Install torch matching your CUDA version first if
+# it isn't already present, then install the rest:
+unsloth
+unsloth_zoo
+bitsandbytes
+accelerate
+xformers
+peft
+trl
+triton
+timm  # required for Gemma-4 vision/audio
+sentencepiece
+protobuf
+datasets==4.3.0
+huggingface_hub>=0.34.0
+hf_transfer
+transformers==5.5.0
+tokenizers>=0.22.0,<=0.23.0
+torchao>=0.16.0
+torchcodec
