@@ -185,15 +185,39 @@ with tab_data:
                 st.dataframe(ds.to_pandas().head())
 
         else:
-            uploaded = st.file_uploader(
-                "Upload CSV / Excel / JSON / JSONL",
-                type=["csv", "xlsx", "xls", "json", "jsonl"],
+            TABLE_EXTS = (".csv", ".xlsx", ".xls", ".json", ".jsonl")
+            DOC_EXTS = (".pdf", ".docx", ".txt")
+
+            uploaded_files = st.file_uploader(
+                "Upload data (CSV/Excel/JSON/JSONL) dan/atau dokumen persona (PDF/DOCX/TXT) — "
+                "bisa pilih beberapa file sekaligus",
+                type=["csv", "xlsx", "xls", "json", "jsonl", "pdf", "docx", "txt"],
+                accept_multiple_files=True,
                 help=(
-                    "Contoh: (1) CSV/Excel data produk (nama, deskripsi, harga, ...), atau "
+                    "Contoh: (1) CSV/Excel data produk (nama, deskripsi, harga, ...), "
                     "(2) spreadsheet hasil konversi dokumen instruction/rule + contoh Q&A "
-                    "(kolom mis. category/system/user/assistant)."
+                    "(kolom mis. category/system/user/assistant), dan/atau "
+                    "(3) dokumen persona/rule (PDF/DOCX/TXT) — teksnya bisa dipakai sebagai system prompt "
+                    "untuk semua baris data tabel di atas."
                 ),
             )
+            table_files = [f for f in uploaded_files if f.name.lower().endswith(TABLE_EXTS)]
+            doc_files = [f for f in uploaded_files if f.name.lower().endswith(DOC_EXTS)]
+
+            if len(table_files) > 1:
+                st.warning(f"Ada {len(table_files)} file data diupload, cuma dipakai yang pertama: `{table_files[0].name}`.")
+            if len(doc_files) > 1:
+                st.warning(f"Ada {len(doc_files)} dokumen persona diupload, cuma dipakai yang pertama: `{doc_files[0].name}`.")
+
+            uploaded = table_files[0] if table_files else None
+            doc_file = doc_files[0] if doc_files else None
+
+            if doc_file is not None and uploaded is None:
+                st.info(
+                    "Dokumen persona terdeteksi. Upload juga file data (CSV/Excel/JSON/JSONL) di kotak yang sama "
+                    "untuk mulai membangun dataset — dokumennya akan dipakai jadi system prompt."
+                )
+
             if uploaded is not None:
                 df = read_uploaded_table(uploaded)
                 st.write(f"{len(df)} baris, kolom: {list(df.columns)}")
@@ -213,18 +237,8 @@ with tab_data:
                         "Contoh spreadsheet hasil konversi dokumen persona/guardrail/simulasi: "
                         "system=`{system}`, user=`{user}`, assistant=`{assistant}`."
                     )
-                    with st.expander("📄 Opsional: upload dokumen persona/rule (PDF/DOCX/TXT) untuk auto-isi system template"):
-                        doc_file = st.file_uploader(
-                            "Dokumen persona/rule/guardrail",
-                            type=["pdf", "docx", "txt"],
-                            help=(
-                                "Teksnya diekstrak apa adanya (bukan di-parse jadi Q&A) dan dipakai sebagai "
-                                "system prompt yang sama untuk semua baris data CSV/Excel di atas. Kalau dialog "
-                                "contoh di dokumen ini mau jadi baris training terpisah, konversi dulu ke "
-                                "spreadsheet (kolom category/system/user/assistant)."
-                            ),
-                        )
-                        if doc_file is not None:
+                    if doc_file is not None:
+                        with st.expander(f"📄 Preview teks dari dokumen persona: {doc_file.name}"):
                             try:
                                 extracted = extract_text_from_document(doc_file)
                             except Exception as e:
@@ -232,7 +246,7 @@ with tab_data:
                                 extracted = ""
                             if extracted:
                                 st.session_state["_extracted_doc_text"] = extracted
-                                st.text_area("Preview teks hasil ekstraksi", extracted, height=150, disabled=True)
+                                st.text_area("Teks hasil ekstraksi", extracted, height=150, disabled=True)
                                 st.button(
                                     "Pakai teks ini sebagai System / rule template",
                                     on_click=_use_extracted_text_as_system,
