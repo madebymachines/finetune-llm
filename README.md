@@ -35,11 +35,15 @@ streamlit run app.py
    - **Text** — dipecah jadi dua sub-tab yang terpisah karena tujuannya beda:
      - **🎭 Persona & Guardrail (Training)**: data yang benar-benar di-**finetune** ke model
        (gaya bicara & batasan aman/tidak aman). Dataset HF Hub (default
-       `mlabonne/FineTome-100k`) atau upload custom (CSV/Excel/JSON/JSONL) — kolom
-       `conversations` (ShareGPT) atau `user`+`assistant`(+`system`) terdeteksi otomatis;
-       kalau formatnya lain, ada Template Builder manual (`{nama_kolom}` placeholder).
-       Bisa juga upload dokumen persona/rule (PDF/DOCX/TXT) untuk dipakai sebagai
-       `system` template.
+       `mlabonne/FineTome-100k`), atau upload dokumen persona/rule (PDF/DOCX/TXT) — kalau
+       dokumennya berisi contoh dialog berpola `User: "..." AI: "..."` (termasuk beberapa
+       variasi jawaban bernomor untuk satu pesan user), contoh itu **otomatis ditarik**
+       jadi baris percakapan training di tabel yang bisa diedit langsung di UI (tambah/hapus
+       baris, atau isi manual kalau tidak ada dokumen sama sekali) sebelum dipakai — jadi
+       tidak perlu bikin file CSV terpisah kalau contohnya sudah ada di dalam dokumen. Upload
+       file percakapan siap pakai (CSV/Excel/JSON/JSONL, kolom `conversations` atau
+       `user`+`assistant`+`system`) tetap tersedia sebagai jalur alternatif untuk yang sudah
+       punya spreadsheet.
      - **📦 Knowledge Base (Katalog / Chat with Document)**: data yang **tidak** di-training —
        upload katalog produk (CSV/Excel/JSON) dan/atau dokumen apapun (PDF/DOCX/TXT/MD),
        bisa banyak sekaligus. Setiap sumber otomatis dipecah jadi potongan-potongan kecil
@@ -92,11 +96,14 @@ src/eval_utils.py          # eval loss/perplexity, streaming chat, before-vs-aft
 - Tab Export (save/merge/GGUF/push-to-hub) sengaja tidak ada di v1 — training dijalankan
   langsung di tool ini, tapi kalau butuh export model, notebook Unsloth aslinya sudah
   punya cell untuk itu; bisa ditambahkan kembali ke tool ini kalau memang dibutuhkan.
-- Untuk data instruction/rule/persona/guardrail berbentuk dokumen naratif (bukan tabel),
-  konversi dulu jadi spreadsheet (kolom `category`/`system`/`user`/`assistant`) sebelum
-  di-upload ke sub-tab Persona & Guardrail — Template Builder tidak mem-parsing PDF/Docs
-  secara langsung jadi Q&A per baris (untuk dokumen naratif sebagai referensi/katalog,
-  upload saja langsung ke Knowledge Base — di situ dokumen memang diproses apa adanya).
+- Dokumen naratif persona/rule (PDF/DOCX/TXT) di-parse otomatis (regex best-effort, lihat
+  `parse_user_ai_examples` di `src/data_utils.py`) mencari pola `User: "..." AI: "..."` —
+  hasilnya masuk ke tabel yang bisa diedit di UI, bukan langsung jadi dataset final, karena
+  parsing seperti ini tidak dijamin cocok untuk semua format dokumen. Kalau dokumenmu pakai
+  format lain yang tidak kena pola ini, isi tabelnya manual atau upload spreadsheet siap
+  pakai. Untuk dokumen naratif sebagai referensi/katalog (bukan contoh dialog training),
+  upload saja langsung ke Knowledge Base — di situ dokumen memang diproses apa adanya
+  (di-chunk, bukan di-parse jadi Q&A).
 - Knowledge Base pakai retrieval brute-force (numpy cosine similarity, exact — bukan
   approximate), bukan FAISS/Chroma: cukup cepat & akurat untuk skala katalog produk biasa
   (ratusan–ribuan baris/potongan), tanpa dependency vector-DB tambahan. Model embedding-nya

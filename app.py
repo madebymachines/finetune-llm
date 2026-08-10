@@ -27,6 +27,7 @@ from src.data_utils import (
     load_hf_dataset,
     looks_like_sharegpt,
     media_train_eval_split,
+    parse_user_ai_examples,
     read_uploaded_table,
     resolve_conversation_columns,
     row_to_text,
@@ -237,23 +238,88 @@ with tab_data:
                     st.dataframe(ds.to_pandas().head())
 
             else:
-                with st.expander("📄 Langkah 1 (opsional): upload dokumen persona/rule (PDF/DOCX/TXT)"):
+                with st.expander("📄 Langkah 1: upload dokumen persona/rule (PDF/DOCX/TXT)", expanded=True):
                     st.caption(
-                        "Teksnya diekstrak apa adanya dan otomatis dipakai sebagai system prompt di Langkah 2 — "
-                        "kalau data percakapanmu belum punya kolom `system` sendiri."
+                        "Teksnya diekstrak apa adanya dan dipakai sebagai system prompt. Kalau dokumennya berisi "
+                        "contoh dialog dengan pola `User: \"...\" AI: \"...\"`, contoh itu juga otomatis ditarik "
+                        "jadi baris percakapan training di tabel Langkah 2 — cek & edit dulu sebelum dipakai."
                     )
                     doc_file = st.file_uploader(
                         "Dokumen persona/rule/guardrail", type=["pdf", "docx", "txt"], key="persona_doc_uploader"
                     )
                     if doc_file is not None:
-                        try:
-                            extracted = extract_text_from_document(doc_file)
-                            st.session_state["_extracted_doc_text"] = extracted
-                            st.text_area("Preview teks hasil ekstraksi", extracted, height=140, disabled=True)
-                        except Exception as e:
-                            st.error(f"Gagal membaca dokumen: {e}")
+                        doc_id = f"{doc_file.name}:{doc_file.size}"
+                        if st.session_state.get("_persona_doc_id") != doc_id:
+                            try:
+                                extracted = extract_text_from_document(doc_file)
+                                st.session_state["_extracted_doc_text"] = extracted
+                                st.session_state["_persona_doc_id"] = doc_id
+                                parsed = parse_user_ai_examples(extracted)
+                                if parsed:
+                                    st.session_state["_persona_examples_df"] = pd.DataFrame(parsed)
+                                    st.success(
+                                        f"✅ {len(parsed)} contoh percakapan terdeteksi otomatis dari dokumen — "
+                                        "cek & edit di tabel Langkah 2 di bawah sebelum dipakai."
+                                    )
+                                else:
+                                    st.info(
+                                        "Tidak ada pola `User: ... AI: ...` terdeteksi otomatis di dokumen ini — "
+                                        "isi tabel Langkah 2 manual, atau upload file percakapan siap pakai."
+                                    )
+                            except Exception as e:
+                                st.error(f"Gagal membaca dokumen: {e}")
+                        if st.session_state.get("_extracted_doc_text"):
+                            st.text_area(
+                                "Preview teks hasil ekstraksi", st.session_state["_extracted_doc_text"],
+                                height=140, disabled=True,
+                            )
 
-                st.markdown("**Langkah 2: upload data percakapan** (CSV/Excel/JSON/JSONL)")
+                st.markdown("**Langkah 2: contoh percakapan** (auto-extract dari dokumen di atas + bisa diedit)")
+                st.caption(
+                    "Kolom `system` kosong = pakai teks dokumen Langkah 1 sebagai system prompt baris itu. "
+                    "Bisa juga isi/tambah baris manual di sini walau tidak upload dokumen sama sekali."
+                )
+                if "_persona_examples_df" not in st.session_state:
+                    st.session_state["_persona_examples_df"] = pd.DataFrame(columns=["system", "user", "assistant"])
+                edited_examples = st.data_editor(
+                    st.session_state["_persona_examples_df"],
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="persona_examples_editor",
+                    column_config={
+                        "system": st.column_config.TextColumn("system (opsional)"),
+                        "user": st.column_config.TextColumn("user"),
+                        "assistant": st.column_config.TextColumn("assistant"),
+                    },
+                )
+                st.session_state["_persona_examples_df"] = edited_examples
+
+                if st.button("✅ Gunakan tabel ini sebagai dataset training", type="primary", key="use_persona_table"):
+                    valid_rows = edited_examples.fillna("")
+                    valid_rows = valid_rows[
+                        (valid_rows["user"].astype(str).str.strip() != "")
+                        & (valid_rows["assistant"].astype(str).str.strip() != "")
+                    ]
+                    if valid_rows.empty:
+                        st.warning("Tabel masih kosong — isi minimal satu baris `user` + `assistant`.")
+                    else:
+                        doc_text = st.session_state.get("_extracted_doc_text", "")
+                        convos = []
+                        for _, row in valid_rows.iterrows():
+                            convo = []
+                            sys_msg = str(row.get("system", "")).strip() or doc_text
+                            if sys_msg:
+                                convo.append({"role": "system", "content": sys_msg})
+                            convo.append({"role": "user", "content": str(row["user"])})
+                            convo.append({"role": "assistant", "content": str(row["assistant"])})
+                            convos.append(convo)
+                        st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
+                        any_row_system = (valid_rows["system"].astype(str).str.strip() != "").any()
+                        st.session_state["last_system_prompt"] = "" if any_row_system else doc_text
+                        st.success(f"Dataset training siap: {len(convos)} percakapan.")
+
+                st.divider()
+                st.markdown("**Atau: upload file percakapan siap pakai** (CSV/Excel/JSON/JSONL)")
                 train_file = st.file_uploader(
                     "Data percakapan training",
                     type=["csv", "xlsx", "xls", "json", "jsonl"],

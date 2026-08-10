@@ -67,10 +67,8 @@ def _clean_extracted_text(text: str) -> str:
 
 def extract_text_from_document(uploaded_file) -> str:
     """Extract raw text from an uploaded PDF/DOCX/TXT (persona/rule/guardrail
-    document). This is plain text extraction, not structured Q&A parsing —
-    narrative documents with numbered dialogue examples still need manual
-    conversion to a spreadsheet if those examples should become individual
-    training rows rather than just system-prompt context."""
+    document). Plain text extraction — structured Q&A examples embedded in
+    the narrative are pulled out separately by parse_user_ai_examples()."""
     name = uploaded_file.name.lower()
     if name.endswith(".pdf"):
         from pypdf import PdfReader
@@ -87,6 +85,34 @@ def extract_text_from_document(uploaded_file) -> str:
     else:
         raise ValueError(f"Format dokumen tidak didukung: {uploaded_file.name}")
     return _clean_extracted_text(raw)
+
+
+_USER_AI_BLOCK = re.compile(
+    r'User\s*:\s*[“"](?P<user>.+?)[”"]\s*AI\s*:\s*(?P<ai>.+?)(?=User\s*:|\Z)', re.DOTALL
+)
+_NUMBERED_VARIANT = re.compile(r'\d+[.)]\s*[“"](?P<text>.+?)[”"]', re.DOTALL)
+
+
+def parse_user_ai_examples(text: str) -> list[dict]:
+    """Best-effort extraction of 'User: "..." AI: "..."' example dialogues out
+    of a narrative persona/rule document — including the common pattern of
+    several numbered AI response variants for the same user line (data
+    augmentation by phrasing), which each become a separate training row
+    reusing that user message. This is a starting point for the user to
+    review/edit in the UI, not a guaranteed-correct parse of any document."""
+    rows = []
+    for m in _USER_AI_BLOCK.finditer(text):
+        user_msg = m.group("user").strip()
+        ai_block = m.group("ai").strip()
+        variants = [v.group("text").strip() for v in _NUMBERED_VARIANT.finditer(ai_block)]
+        if not variants:
+            single = ai_block.strip(' "“”').strip()
+            if single:
+                variants = [single]
+        for assistant_msg in variants:
+            if user_msg and assistant_msg:
+                rows.append({"system": "", "user": user_msg, "assistant": assistant_msg})
+    return rows
 
 
 # ---------------------------------------------------------------------------
