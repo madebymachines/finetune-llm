@@ -1028,21 +1028,26 @@ with tab_test:
 # ---------------------------------------------------------------------------
 with tab_eval:
     modality = st.session_state.modality
-    st.subheader("Eval loss / perplexity")
-    if st.session_state.trainer is None:
-        st.warning("Butuh trainer aktif (jalankan Train dulu) dan eval dataset (dari tab Data, eval split > 0).")
-    elif st.session_state.eval_dataset is None:
-        st.warning("Eval dataset kosong. Set eval split > 0 di tab Data lalu ulangi 'siapkan train/eval set'.")
-    else:
-        label = st.text_input("Label run ini (mis. 'before' / 'after')", value="after")
-        if st.button("Hitung Eval Loss"):
-            with st.spinner("Evaluating..."):
-                metrics, perplexity = compute_eval_loss(st.session_state.trainer)
-            st.session_state.eval_log.append(
-                {"label": label, "eval_loss": metrics.get("eval_loss"), "perplexity": perplexity}
-            )
-        if st.session_state.eval_log:
-            st.table(st.session_state.eval_log)
+    with st.expander("📉 Eval loss / perplexity (opsional, cek kesehatan teknis training)"):
+        st.caption(
+            "Sinyal teknis sekunder — bagus untuk mendeteksi training yang gagal konvergen (loss naik/stuck), "
+            "tapi buat menilai gaya/kepatuhan persona & guardrail, andalkan **Before vs After comparison** di "
+            "bawah, bukan angka ini."
+        )
+        if st.session_state.trainer is None:
+            st.warning("Butuh trainer aktif (jalankan Train dulu) dan eval dataset (dari tab Data, eval split > 0).")
+        elif st.session_state.eval_dataset is None:
+            st.warning("Eval dataset kosong. Set eval split > 0 di tab Data lalu ulangi 'siapkan train/eval set'.")
+        else:
+            label = st.text_input("Label run ini (mis. 'before' / 'after')", value="after")
+            if st.button("Hitung Eval Loss"):
+                with st.spinner("Evaluating..."):
+                    metrics, perplexity = compute_eval_loss(st.session_state.trainer)
+                st.session_state.eval_log.append(
+                    {"label": label, "eval_loss": metrics.get("eval_loss"), "perplexity": perplexity}
+                )
+            if st.session_state.eval_log:
+                st.table(st.session_state.eval_log)
 
     st.divider()
     st.subheader("Before vs After comparison")
