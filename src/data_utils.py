@@ -92,6 +92,14 @@ _USER_AI_BLOCK = re.compile(
 )
 _NUMBERED_VARIANT = re.compile(r'\d+[.)]\s*[“"](?P<text>.+?)[”"]', re.DOTALL)
 
+# A real chat turn in this pattern is a sentence or two. Anything past this is
+# almost certainly the non-greedy quote match "running away" to some unrelated
+# closing quote much later in the document (e.g. a citation or another quoted
+# term elsewhere on the page) rather than genuine dialogue — better to drop it
+# than silently produce a multi-thousand-character row that blows the training
+# context budget without the user noticing.
+_MAX_EXAMPLE_CHARS = 600
+
 
 def parse_user_ai_examples(text: str) -> list[dict]:
     """Best-effort extraction of 'User: "..." AI: "..."' example dialogues out
@@ -103,6 +111,8 @@ def parse_user_ai_examples(text: str) -> list[dict]:
     rows = []
     for m in _USER_AI_BLOCK.finditer(text):
         user_msg = m.group("user").strip()
+        if len(user_msg) > _MAX_EXAMPLE_CHARS:
+            continue
         ai_block = m.group("ai").strip()
         variants = [v.group("text").strip() for v in _NUMBERED_VARIANT.finditer(ai_block)]
         if not variants:
@@ -110,7 +120,7 @@ def parse_user_ai_examples(text: str) -> list[dict]:
             if single:
                 variants = [single]
         for assistant_msg in variants:
-            if user_msg and assistant_msg:
+            if user_msg and assistant_msg and len(assistant_msg) <= _MAX_EXAMPLE_CHARS:
                 rows.append({"system": "", "user": user_msg, "assistant": assistant_msg})
     return rows
 

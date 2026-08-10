@@ -250,7 +250,17 @@ with tab_data:
                     )
                     if doc_file is not None:
                         doc_id = f"{doc_file.name}:{doc_file.size}"
-                        if st.session_state.get("_persona_doc_id") != doc_id:
+                        already_parsed = st.session_state.get("_persona_doc_id") == doc_id
+                        force_reparse = False
+                        if already_parsed:
+                            force_reparse = st.button(
+                                "🔄 Parse ulang dokumen ini (regenerate tabel Langkah 2)",
+                                key="reparse_persona_doc",
+                                help="Menimpa tabel Langkah 2 saat ini dengan hasil parsing ulang — pakai ini "
+                                "kalau mau coba lagi setelah mengedit tabel secara tidak sengaja, atau setelah "
+                                "aturan auto-extract-nya diperbaiki.",
+                            )
+                        if not already_parsed or force_reparse:
                             try:
                                 extracted = extract_text_from_document(doc_file)
                                 st.session_state["_extracted_doc_text"] = extracted
@@ -358,16 +368,23 @@ with tab_data:
                         st.session_state["last_system_prompt"] = "" if any_row_system else default_system
                         st.success(f"Dataset training siap: {len(convos)} percakapan.")
 
-                        longest_chars = max(
-                            sum(len(m["content"]) for m in convo) for convo in convos
+                        longest_idx = max(
+                            range(len(convos)), key=lambda i: sum(len(m["content"]) for m in convos[i])
                         )
+                        longest_convo = convos[longest_idx]
+                        longest_chars = sum(len(m["content"]) for m in longest_convo)
                         longest_tokens_est = longest_chars // CHARS_PER_TOKEN
                         if longest_tokens_est >= max_seq_length - 50:
                             st.error(
-                                f"🚫 Baris terpanjang di dataset ini ≈{longest_chars} karakter "
+                                f"🚫 Baris ke-{longest_idx + 1} di dataset ini ≈{longest_chars} karakter "
                                 f"(≈{longest_tokens_est} token) — hampir pasti akan ke-truncate dengan Max "
-                                f"sequence length={max_seq_length}. Periksa lagi System prompt / isi tabel di atas."
+                                f"sequence length={max_seq_length}. Cari baris ini di tabel Langkah 2 (pakai ikon "
+                                "🔍 di pojok kanan atas tabel, cari potongan teks di bawah) lalu perbaiki/hapus:"
                             )
+                            with st.expander("🔍 Isi baris bermasalah"):
+                                for m in longest_convo:
+                                    preview = m["content"][:1500] + ("…" if len(m["content"]) > 1500 else "")
+                                    st.text(f"[{m['role']}] {preview}")
                         else:
                             st.caption(
                                 f"Baris terpanjang di dataset ini: ≈{longest_chars} karakter "
