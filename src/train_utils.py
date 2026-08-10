@@ -100,15 +100,29 @@ def apply_lora(
 
 
 class StreamlitTrainerCallback(TrainerCallback):
-    """Pushes live training progress into Streamlit placeholders during the
+    """Pushes live training progress — progress bar, latest-step status, loss
+    chart, and a scrolling text log — into Streamlit placeholders during the
     synchronous trainer.train() call (Streamlit flushes placeholder updates
     as they happen within a single script run)."""
 
-    def __init__(self, progress_bar, status_text, chart_placeholder):
+    def __init__(self, progress_bar, status_text, chart_placeholder, log_placeholder=None, max_log_lines=200):
         self.progress_bar = progress_bar
         self.status_text = status_text
         self.chart_placeholder = chart_placeholder
+        self.log_placeholder = log_placeholder
+        self.max_log_lines = max_log_lines
         self.history = []
+        self.log_lines = []
+
+    def _log(self, line: str):
+        self.log_lines.append(line)
+        del self.log_lines[: -self.max_log_lines]  # keep only the most recent lines
+        if self.log_placeholder is not None:
+            self.log_placeholder.code("\n".join(self.log_lines))
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        total = args.max_steps if args.max_steps and args.max_steps > 0 else "?"
+        self._log(f"🚀 Training dimulai — target {total} steps.")
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not logs or "loss" not in logs:
@@ -121,9 +135,15 @@ class StreamlitTrainerCallback(TrainerCallback):
         frac = min(state.global_step / total, 1.0) if total else 0.0
         self.progress_bar.progress(frac)
         lr = logs.get("learning_rate", "-")
-        self.status_text.text(
-            f"Step {state.global_step}/{total} | loss={logs['loss']:.4f} | lr={lr}"
-        )
+        grad_norm = logs.get("grad_norm")
+        line = f"[{frac * 100:5.1f}%] Step {state.global_step}/{total} | loss={logs['loss']:.4f} | lr={lr}"
+        if grad_norm is not None:
+            line += f" | grad_norm={grad_norm:.4f}"
+        self.status_text.text(line)
+        self._log(line)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._log(f"✅ Training selesai di step {state.global_step}.")
 
 
 def build_trainer(modality: str, model, processor, train_dataset, eval_dataset, sft_kwargs: dict):

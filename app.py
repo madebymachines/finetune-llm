@@ -292,10 +292,26 @@ with tab_data:
                         key="prefill_persona_system_btn", on_click=_prefill_persona_system_prompt,
                     )
                 st.text_area("System prompt", key="persona_system_prompt", height=100)
-                if len(st.session_state["persona_system_prompt"]) > 800:
+                CHARS_PER_TOKEN = 4  # rough heuristic for mixed ID/EN text — not exact, just a budget sanity check
+                sys_chars = len(st.session_state["persona_system_prompt"])
+                sys_tokens_est = sys_chars // CHARS_PER_TOKEN
+                budget_left = max_seq_length - sys_tokens_est
+                st.caption(
+                    f"≈{sys_chars} karakter (≈{sys_tokens_est} token). Max sequence length saat ini "
+                    f"(dari tab Setup): **{max_seq_length}** token — sisa ruang untuk user+assistant+token "
+                    f"spesial per baris: ≈{budget_left} token."
+                )
+                if budget_left < 150:
+                    st.error(
+                        f"🚫 Nyaris pasti training gagal (truncation) — sisa ruang cuma ≈{budget_left} token, "
+                        f"hampir tidak cukup untuk pesan user+assistant. Persingkat system prompt ini jadi di "
+                        f"bawah ≈{max(0, (max_seq_length - 300)) * CHARS_PER_TOKEN} karakter, atau naikkan "
+                        "Max sequence length signifikan lebih tinggi (perhatikan VRAM)."
+                    )
+                elif budget_left < 400:
                     st.warning(
-                        "System prompt ini >800 karakter. Kalau training gagal karena truncation, "
-                        "persingkat system prompt ini, atau naikkan 'Max sequence length' di tab Setup."
+                        f"⚠️ Sisa ruang cuma ≈{budget_left} token — aman untuk balasan pendek, tapi bisa "
+                        "ke-truncate kalau ada baris user/assistant yang panjang."
                     )
 
                 st.markdown("**Langkah 2: contoh percakapan** (auto-extract dari dokumen di atas + bisa diedit)")
@@ -341,6 +357,22 @@ with tab_data:
                         any_row_system = (valid_rows["system"].astype(str).str.strip() != "").any()
                         st.session_state["last_system_prompt"] = "" if any_row_system else default_system
                         st.success(f"Dataset training siap: {len(convos)} percakapan.")
+
+                        longest_chars = max(
+                            sum(len(m["content"]) for m in convo) for convo in convos
+                        )
+                        longest_tokens_est = longest_chars // CHARS_PER_TOKEN
+                        if longest_tokens_est >= max_seq_length - 50:
+                            st.error(
+                                f"🚫 Baris terpanjang di dataset ini ≈{longest_chars} karakter "
+                                f"(≈{longest_tokens_est} token) — hampir pasti akan ke-truncate dengan Max "
+                                f"sequence length={max_seq_length}. Periksa lagi System prompt / isi tabel di atas."
+                            )
+                        else:
+                            st.caption(
+                                f"Baris terpanjang di dataset ini: ≈{longest_chars} karakter "
+                                f"(≈{longest_tokens_est} token) dari Max sequence length={max_seq_length}."
+                            )
 
                 st.divider()
                 st.markdown("**Atau: upload file percakapan siap pakai** (CSV/Excel/JSON/JSONL)")
@@ -400,6 +432,21 @@ with tab_data:
                                 st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
                                 st.session_state["last_system_prompt"] = "" if system_col else flat_system_template
                                 st.success(f"Dataset training siap: {len(convos)} percakapan.")
+
+                                longest_chars = max(sum(len(m["content"]) for m in convo) for convo in convos)
+                                longest_tokens_est = longest_chars // CHARS_PER_TOKEN
+                                if longest_tokens_est >= max_seq_length - 50:
+                                    st.error(
+                                        f"🚫 Baris terpanjang di dataset ini ≈{longest_chars} karakter "
+                                        f"(≈{longest_tokens_est} token) — hampir pasti ke-truncate dengan Max "
+                                        f"sequence length={max_seq_length}. Kalau kolom `system`-mu berisi teks "
+                                        "panjang (mis. seluruh dokumen), persingkat dulu di file sumbernya."
+                                    )
+                                else:
+                                    st.caption(
+                                        f"Baris terpanjang di dataset ini: ≈{longest_chars} karakter "
+                                        f"(≈{longest_tokens_est} token) dari Max sequence length={max_seq_length}."
+                                    )
 
                     else:
                         st.warning(
@@ -799,7 +846,9 @@ with tab_train:
             progress_bar = st.progress(0.0)
             status_text = st.empty()
             chart_placeholder = st.empty()
-            callback = StreamlitTrainerCallback(progress_bar, status_text, chart_placeholder)
+            with st.expander("📜 Training log", expanded=True):
+                log_placeholder = st.empty()
+            callback = StreamlitTrainerCallback(progress_bar, status_text, chart_placeholder, log_placeholder)
             trainer.add_callback(callback)
 
             with st.spinner("Training..."):
