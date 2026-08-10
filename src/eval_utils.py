@@ -135,16 +135,19 @@ def before_after_compare(
     top_p: float = DEFAULT_TOP_P,
     top_k: int = DEFAULT_TOP_K,
 ):
-    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray}.
-    For each item, generate with the LoRA adapter disabled (base model
-    behaviour) and enabled (finetuned), reusing the same loaded weights."""
+    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray,
+    "system_prompt"?: str}. Each item may override `system_prompt` (e.g. with
+    per-question Knowledge Base retrieval context); falls back to the shared
+    `system_prompt` arg otherwise. For each item, generate with the LoRA
+    adapter disabled (base model behaviour) and enabled (finetuned), reusing
+    the same loaded weights."""
     results = []
     for item in items:
         kwargs = dict(
             text=item["text"],
             image=item.get("image"),
             audio=item.get("audio"),
-            system_prompt=system_prompt,
+            system_prompt=item.get("system_prompt", system_prompt),
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,

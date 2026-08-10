@@ -32,14 +32,23 @@ streamlit run app.py
      `FastVisionModel`), default LoRA (r/alpha), dan target modules yang dipakai.
    - Pilih/masukkan model Gemma-4, load model, lalu apply LoRA adapters.
 2. **📊 Data** — tergantung modalitas:
-   - **Text**: dataset HF Hub (default `mlabonne/FineTome-100k`) atau upload custom
-     (CSV/Excel/JSON/JSONL). Kalau sudah format ShareGPT (kolom `conversations`) dipakai
-     langsung; kalau tabular, gunakan **Template Builder** — petakan kolom apapun (data
-     produk, atau spreadsheet hasil konversi dokumen instruction/rule/persona + contoh Q&A)
-     ke `system` / `user` / `assistant` template memakai placeholder `{nama_kolom}`.
-     Bisa juga upload dokumen persona/rule (PDF/DOCX/TXT) sekaligus — teksnya diekstrak
-     apa adanya dan bisa langsung dipakai sebagai `system` template untuk semua baris CSV
-     (bukan parsing otomatis jadi Q&A per baris; untuk itu tetap konversi ke spreadsheet).
+   - **Text** — dipecah jadi dua sub-tab yang terpisah karena tujuannya beda:
+     - **🎭 Persona & Guardrail (Training)**: data yang benar-benar di-**finetune** ke model
+       (gaya bicara & batasan aman/tidak aman). Dataset HF Hub (default
+       `mlabonne/FineTome-100k`) atau upload custom (CSV/Excel/JSON/JSONL) — kolom
+       `conversations` (ShareGPT) atau `user`+`assistant`(+`system`) terdeteksi otomatis;
+       kalau formatnya lain, ada Template Builder manual (`{nama_kolom}` placeholder).
+       Bisa juga upload dokumen persona/rule (PDF/DOCX/TXT) untuk dipakai sebagai
+       `system` template.
+     - **📦 Knowledge Base (Katalog / Chat with Document)**: data yang **tidak** di-training —
+       upload katalog produk (CSV/Excel/JSON) dan/atau dokumen apapun (PDF/DOCX/TXT/MD),
+       bisa banyak sekaligus. Setiap sumber otomatis dipecah jadi potongan-potongan kecil
+       (baris tabel, atau paragraf dokumen), lalu diindeks dengan embedding multilingual
+       (`intfloat/multilingual-e5-small`, termasuk Bahasa Indonesia). Saat chat di tab
+       Test/Evaluate, potongan yang paling relevan dengan pertanyaan diambil otomatis
+       (cosine similarity, top-k) dan disisipkan ke context — jadi jawabannya selalu
+       berdasarkan data terbaru tanpa training ulang, dan tetap akurat walau pertanyaannya
+       diparafrase.
    - **Vision**: dataset HF Hub dengan kolom gambar+teks (default `unsloth/LaTeX_OCR`), atau
      upload banyak gambar + CSV/Excel berisi nama file, pertanyaan (opsional), dan jawaban.
    - **Audio**: dataset HF Hub dengan kolom audio+transkrip (default
@@ -56,6 +65,9 @@ streamlit run app.py
    - Audio: upload satu file audio + pertanyaan (mis. transkripsi), lihat jawaban model.
    - Toggle adapter (base vs hasil finetune), parameter generation sesuai rekomendasi Gemma-4
      (`temperature=1.0, top_p=0.95, top_k=64`).
+   - Kalau Knowledge Base sudah dibangun di tab Data, ada toggle "Sertakan Knowledge Base" —
+     tiap pertanyaan otomatis diambilkan potongan paling relevan (expander "🔍 Konteks
+     Knowledge Base yang dipakai" menampilkan potongan mana saja yang disisipkan).
 5. **📈 Evaluate**
    - **Eval loss / perplexity**: `trainer.evaluate()` pada eval split, dicatat per-label
      (mis. jalankan sebelum & sesudah training untuk dibandingkan).
@@ -67,9 +79,10 @@ streamlit run app.py
 
 ```
 app.py                   # UI Streamlit (semua tab)
-src/constants.py          # daftar model, chat template, default per modalitas (LoRA & SFT)
+src/constants.py          # daftar model, chat template, default per modalitas (LoRA & SFT), default Knowledge Base
 src/gpu_utils.py           # cek CUDA & memory stats
-src/data_utils.py          # load dataset HF / upload custom / template builder / builder Vision & Audio
+src/data_utils.py          # load dataset HF / upload custom / template builder / builder Vision & Audio / chunking KB
+src/retrieval.py           # embedding (sentence-transformers) + cosine similarity retrieval untuk Knowledge Base
 src/train_utils.py         # load model (modality-aware), LoRA, SFTTrainer, callback progress
 src/eval_utils.py          # eval loss/perplexity, streaming chat, before-vs-after (modality-aware)
 ```
@@ -81,4 +94,10 @@ src/eval_utils.py          # eval loss/perplexity, streaming chat, before-vs-aft
   punya cell untuk itu; bisa ditambahkan kembali ke tool ini kalau memang dibutuhkan.
 - Untuk data instruction/rule/persona/guardrail berbentuk dokumen naratif (bukan tabel),
   konversi dulu jadi spreadsheet (kolom `category`/`system`/`user`/`assistant`) sebelum
-  di-upload — Template Builder tidak mem-parsing PDF/Docs secara langsung.
+  di-upload ke sub-tab Persona & Guardrail — Template Builder tidak mem-parsing PDF/Docs
+  secara langsung jadi Q&A per baris (untuk dokumen naratif sebagai referensi/katalog,
+  upload saja langsung ke Knowledge Base — di situ dokumen memang diproses apa adanya).
+- Knowledge Base pakai retrieval brute-force (numpy cosine similarity, exact — bukan
+  approximate), bukan FAISS/Chroma: cukup cepat & akurat untuk skala katalog produk biasa
+  (ratusan–ribuan baris/potongan), tanpa dependency vector-DB tambahan. Model embedding-nya
+  jalan di CPU supaya tidak berebut VRAM dengan LLM 4-bit yang sedang di-load.

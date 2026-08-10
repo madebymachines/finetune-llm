@@ -4,6 +4,7 @@ openpyxl
 Pillow
 pypdf
 python-docx
+sentence-transformers  # Knowledge Base / RAG retrieval (chat with document, katalog produk)
 
 # Unsloth + finetuning stack (mirrors Unsloth's Gemma4 (E4B) Text/Vision/Audio notebooks)
 # NOTE: requires a CUDA GPU. Install torch matching your CUDA version first if

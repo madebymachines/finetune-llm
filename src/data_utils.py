@@ -3,11 +3,17 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 
 import pandas as pd
 from datasets import Dataset
 
-from .constants import AUDIO_SAMPLING_RATE, CHAT_TEMPLATE
+from .constants import (
+    AUDIO_SAMPLING_RATE,
+    CHAT_TEMPLATE,
+    DEFAULT_KB_CHUNK_OVERLAP,
+    DEFAULT_KB_CHUNK_SIZE,
+)
 
 
 class _SafeDict(dict):
@@ -46,6 +52,19 @@ def read_uploaded_table(uploaded_file):
     raise ValueError(f"Format file tidak didukung: {uploaded_file.name}")
 
 
+def _clean_extracted_text(text: str) -> str:
+    """Normalize whitespace from PDF/DOCX extraction. Some PDFs (notably ones
+    exported from Google Docs) make pypdf emit one word per line with extra
+    spaces — this rejoins mid-paragraph line breaks and collapses runs of
+    spaces, while still keeping blank-line paragraph breaks intact."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = re.sub(r" *\n{2,} *", "\n\n", text)
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
 def extract_text_from_document(uploaded_file) -> str:
     """Extract raw text from an uploaded PDF/DOCX/TXT (persona/rule/guardrail
     document). This is plain text extraction, not structured Q&A parsing —
@@ -57,15 +76,17 @@ def extract_text_from_document(uploaded_file) -> str:
         from pypdf import PdfReader
 
         reader = PdfReader(uploaded_file)
-        return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
-    if name.endswith(".docx"):
+        raw = "\n\n".join((page.extract_text() or "") for page in reader.pages)
+    elif name.endswith(".docx"):
         from docx import Document as DocxDocument
 
         doc = DocxDocument(uploaded_file)
-        return "\n".join(p.text for p in doc.paragraphs).strip()
-    if name.endswith(".txt"):
-        return uploaded_file.read().decode("utf-8").strip()
-    raise ValueError(f"Format dokumen tidak didukung: {uploaded_file.name}")
+        raw = "\n".join(p.text for p in doc.paragraphs)
+    elif name.endswith((".txt", ".md")):
+        raw = uploaded_file.read().decode("utf-8")
+    else:
+        raise ValueError(f"Format dokumen tidak didukung: {uploaded_file.name}")
+    return _clean_extracted_text(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +102,25 @@ def sharegpt_df_to_dataset(df: pd.DataFrame) -> Dataset:
 
     ds = Dataset.from_pandas(df.reset_index(drop=True))
     return standardize_data_formats(ds)
+
+
+def resolve_conversation_columns(df: pd.DataFrame) -> dict:
+    """Detect whether an uploaded table is already conversation-shaped, so the
+    UI can offer a one-click "Gunakan data ini" path instead of requiring
+    manual Template Builder mapping:
+    - a "conversations" column -> ShareGPT format, use directly.
+    - "user"/"assistant" columns (or "question"/"answer" aliases), optionally
+      with "system"/"rule" -> flat per-row conversation columns, map directly.
+    - otherwise -> "manual", caller falls back to Template Builder."""
+    cols_lower = {c.lower(): c for c in df.columns}
+    if "conversations" in cols_lower:
+        return {"mode": "sharegpt"}
+    user_col = cols_lower.get("user") or cols_lower.get("question")
+    assistant_col = cols_lower.get("assistant") or cols_lower.get("answer")
+    if user_col and assistant_col:
+        system_col = cols_lower.get("system") or cols_lower.get("rule")
+        return {"mode": "flat", "system": system_col, "user": user_col, "assistant": assistant_col}
+    return {"mode": "manual"}
 
 
 def build_conversations_from_template(
@@ -102,6 +142,52 @@ def build_conversations_from_template(
         convo.append({"role": "assistant", "content": assistant_template.format_map(values)})
         conversations.append(convo)
     return conversations
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base (RAG): chunking raw text/tabular data for embedding-based
+# retrieval, so a catalog or document can be Q&A'd without finetuning and
+# without dumping the whole thing into every prompt (see src/retrieval.py).
+# ---------------------------------------------------------------------------
+
+def row_to_text(row: pd.Series) -> str:
+    """Zero-config 'col: value' rendering of one table row, so a CSV/Excel
+    catalog can become knowledge-base chunks without the user writing a
+    template. Blank/NaN cells are skipped."""
+    parts = [f"{col}: {val}" for col, val in row.items() if not pd.isna(val) and str(val).strip()]
+    return ", ".join(parts)
+
+
+def chunk_text(
+    text: str,
+    chunk_size: int = DEFAULT_KB_CHUNK_SIZE,
+    overlap: int = DEFAULT_KB_CHUNK_OVERLAP,
+) -> list[str]:
+    """Paragraph-aware chunking for document knowledge-base sources: greedily
+    packs paragraphs up to chunk_size, hard-splitting any single paragraph
+    that's longer than chunk_size on its own. `overlap` chars are repeated
+    at each boundary so a fact split across chunks isn't lost to a hard cut."""
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    step = chunk_size - overlap if overlap < chunk_size else chunk_size
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        candidate = f"{current}\n\n{para}" if current else para
+        if len(candidate) <= chunk_size:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            tail = current[-overlap:] if overlap else ""
+            current = f"{tail}\n\n{para}" if tail else para
+        else:
+            current = para
+        while len(current) > chunk_size:
+            chunks.append(current[:chunk_size])
+            current = current[step:]
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def conversations_to_dataset(conversations: list[list[dict]]) -> Dataset:

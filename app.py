@@ -2,6 +2,9 @@ import pandas as pd
 import streamlit as st
 
 from src.constants import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_KB_MAX_CHARS,
+    DEFAULT_KB_TOP_K,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
@@ -17,6 +20,7 @@ from src.data_utils import (
     build_audio_messages_from_upload,
     build_vision_messages_from_hf,
     build_vision_messages_from_upload,
+    chunk_text,
     conversations_to_dataset,
     extract_text_from_document,
     load_audio_array,
@@ -24,11 +28,14 @@ from src.data_utils import (
     looks_like_sharegpt,
     media_train_eval_split,
     read_uploaded_table,
+    resolve_conversation_columns,
+    row_to_text,
     sharegpt_df_to_dataset,
     train_eval_split,
 )
 from src.eval_utils import before_after_compare, compute_eval_loss, stream_chat_response
 from src.gpu_utils import check_cuda, memory_snapshot
+from src.retrieval import embed_passages, embed_query, get_embedder, retrieve_top_chunks
 from src.train_utils import (
     StreamlitTrainerCallback,
     apply_lora,
@@ -38,10 +45,6 @@ from src.train_utils import (
 )
 
 st.set_page_config(page_title="Gemma-4 Finetune Studio", layout="wide")
-
-
-def _use_extracted_text_as_system():
-    st.session_state["text_system_template"] = st.session_state.get("_extracted_doc_text", "")
 
 SCRATCH_DIR = "/tmp/gemma4_finetune_studio"
 
@@ -61,9 +64,39 @@ defaults = {
     "eval_log": [],
     "chat_history": [],
     "last_system_prompt": "",
+    "kb_sources": [],
+    "kb_chunks": [],
+    "kb_embeddings": None,
+    "kb_embedding_model": DEFAULT_EMBEDDING_MODEL,
+    "kb_top_k": DEFAULT_KB_TOP_K,
+    "kb_max_chars": DEFAULT_KB_MAX_CHARS,
 }
 for key, value in defaults.items():
     st.session_state.setdefault(key, value)
+
+
+def kb_augment(query_text: str, use_kb: bool) -> tuple[str, list[dict]]:
+    """Retrieve the most relevant Knowledge Base chunks for `query_text` and
+    render them as a text block to append to a system prompt. Returns ("", [])
+    if the KB isn't built/enabled or nothing relevant was found, so callers
+    can always safely append the result."""
+    if not use_kb or st.session_state["kb_embeddings"] is None or not query_text.strip():
+        return "", []
+    embedder = get_embedder(st.session_state["kb_embedding_model"])
+    query_vec = embed_query(embedder, query_text)
+    hits = retrieve_top_chunks(
+        query_vec,
+        st.session_state["kb_embeddings"],
+        st.session_state["kb_chunks"],
+        top_k=st.session_state["kb_top_k"],
+        max_chars=st.session_state["kb_max_chars"],
+    )
+    if not hits:
+        return "", []
+    block = "Berikut informasi relevan dari knowledge base:\n" + "\n".join(
+        f"- ({h['source']}) {h['text']}" for h in hits
+    )
+    return block, hits
 
 st.title("🦎 Gemma-4 Finetune Studio")
 st.caption("Run, test, and evaluate LoRA finetunes of Gemma-4 (Text / Vision / Audio), adapted from Unsloth's Gemma4 (E4B) notebooks.")
@@ -169,153 +202,299 @@ with tab_data:
 
     # ----- TEXT -----
     if modality == "Text":
-        st.subheader("Sumber data")
-        source = st.radio("Pilih sumber", ["Dataset Hugging Face Hub", "Upload Custom Data"], horizontal=True)
+        sub_persona, sub_kb = st.tabs(
+            ["🎭 Persona & Guardrail (Training)", "📦 Knowledge Base (Katalog / Chat with Document)"]
+        )
 
-        if source == "Dataset Hugging Face Hub":
-            hf_name = st.text_input("Nama dataset", value="mlabonne/FineTome-100k")
-            num_rows = st.number_input("Jumlah baris (0 = semua)", min_value=0, value=3000, step=100)
-            if st.button("Load dataset dari Hub"):
-                with st.spinner("Loading dataset..."):
-                    ds = load_hf_dataset(hf_name, num_rows or None)
-                    ds = sharegpt_df_to_dataset(ds.to_pandas()) if "conversations" in ds.column_names else ds
-                st.session_state["_raw_dataset"] = ds
-                st.session_state["last_system_prompt"] = ""
-                st.success(f"{len(ds)} baris dimuat.")
-                st.dataframe(ds.to_pandas().head())
-
-        else:
-            TABLE_EXTS = (".csv", ".xlsx", ".xls", ".json", ".jsonl")
-            DOC_EXTS = (".pdf", ".docx", ".txt")
-
-            uploaded_files = st.file_uploader(
-                "Upload data (CSV/Excel/JSON/JSONL) dan/atau dokumen persona (PDF/DOCX/TXT) — "
-                "bisa pilih beberapa file sekaligus",
-                type=["csv", "xlsx", "xls", "json", "jsonl", "pdf", "docx", "txt"],
-                accept_multiple_files=True,
-                help=(
-                    "Contoh: (1) CSV/Excel data produk (nama, deskripsi, harga, ...), "
-                    "(2) spreadsheet hasil konversi dokumen instruction/rule + contoh Q&A "
-                    "(kolom mis. category/system/user/assistant), dan/atau "
-                    "(3) dokumen persona/rule (PDF/DOCX/TXT) — teksnya bisa dipakai sebagai system prompt "
-                    "untuk semua baris data tabel di atas."
-                ),
+        # =================================================================
+        # SUB-TAB 1 — Persona & Guardrail: data yang benar-benar di-finetune
+        # =================================================================
+        with sub_persona:
+            n_train = len(st.session_state["_raw_dataset"]) if st.session_state.get("_raw_dataset") is not None else 0
+            if n_train:
+                st.success(f"✅ Dataset training siap: {n_train} baris.")
+            else:
+                st.warning("⚠️ Belum ada dataset training.")
+            st.caption(
+                "Data di sini benar-benar di-**finetune** ke model: mengajarkan gaya bicara & batasan "
+                "(aman/tidak aman). Untuk katalog produk atau data referensi lain, pakai tab "
+                "**Knowledge Base** di sebelah — data itu tidak perlu training ulang."
             )
-            table_files = [f for f in uploaded_files if f.name.lower().endswith(TABLE_EXTS)]
-            doc_files = [f for f in uploaded_files if f.name.lower().endswith(DOC_EXTS)]
+            source = st.radio(
+                "Sumber data training", ["Upload Custom Data", "Dataset Hugging Face Hub"], horizontal=True
+            )
 
-            if len(table_files) > 1:
-                st.warning(f"Ada {len(table_files)} file data diupload, cuma dipakai yang pertama: `{table_files[0].name}`.")
-            if len(doc_files) > 1:
-                st.warning(f"Ada {len(doc_files)} dokumen persona diupload, cuma dipakai yang pertama: `{doc_files[0].name}`.")
+            if source == "Dataset Hugging Face Hub":
+                hf_name = st.text_input("Nama dataset", value="mlabonne/FineTome-100k")
+                num_rows = st.number_input("Jumlah baris (0 = semua)", min_value=0, value=3000, step=100)
+                if st.button("Load dataset dari Hub"):
+                    with st.spinner("Loading dataset..."):
+                        ds = load_hf_dataset(hf_name, num_rows or None)
+                        ds = sharegpt_df_to_dataset(ds.to_pandas()) if "conversations" in ds.column_names else ds
+                    st.session_state["_raw_dataset"] = ds
+                    st.session_state["last_system_prompt"] = ""
+                    st.success(f"{len(ds)} baris dimuat.")
+                    st.dataframe(ds.to_pandas().head())
 
-            uploaded = table_files[0] if table_files else None
-            doc_file = doc_files[0] if doc_files else None
-
-            if doc_file is not None and uploaded is None:
-                st.info(
-                    "Dokumen persona terdeteksi. Upload juga file data (CSV/Excel/JSON/JSONL) di kotak yang sama "
-                    "untuk mulai membangun dataset — dokumennya akan dipakai jadi system prompt."
-                )
-
-            if uploaded is not None:
-                df = read_uploaded_table(uploaded)
-                st.write(f"{len(df)} baris, kolom: {list(df.columns)}")
-                st.dataframe(df.head())
-
-                if looks_like_sharegpt(df):
-                    st.info("Kolom 'conversations' terdeteksi -> menggunakan format ShareGPT langsung.")
-                    if st.button("Gunakan data ini"):
-                        st.session_state["_raw_dataset"] = sharegpt_df_to_dataset(df)
-                        st.session_state["last_system_prompt"] = ""
-                        st.success("Dataset siap.")
-                else:
-                    st.markdown("**Template Builder** — petakan kolom ke percakapan training memakai `{nama_kolom}`.")
+            else:
+                with st.expander("📄 Langkah 1 (opsional): upload dokumen persona/rule (PDF/DOCX/TXT)"):
                     st.caption(
-                        "Contoh data produk: system=`Kamu adalah asisten produk toko.`, "
-                        "user=`Apa itu {nama_produk}?`, assistant=`{deskripsi} Harga: {harga}`.\n\n"
-                        "Contoh spreadsheet hasil konversi dokumen persona/guardrail/simulasi: "
-                        "system=`{system}`, user=`{user}`, assistant=`{assistant}`."
+                        "Teksnya diekstrak apa adanya dan otomatis dipakai sebagai system prompt di Langkah 2 — "
+                        "kalau data percakapanmu belum punya kolom `system` sendiri."
+                    )
+                    doc_file = st.file_uploader(
+                        "Dokumen persona/rule/guardrail", type=["pdf", "docx", "txt"], key="persona_doc_uploader"
                     )
                     if doc_file is not None:
-                        with st.expander(f"📄 Preview teks dari dokumen persona: {doc_file.name}"):
-                            try:
-                                extracted = extract_text_from_document(doc_file)
-                            except Exception as e:
-                                st.error(f"Gagal membaca dokumen: {e}")
-                                extracted = ""
-                            if extracted:
-                                st.session_state["_extracted_doc_text"] = extracted
-                                st.text_area("Teks hasil ekstraksi", extracted, height=150, disabled=True)
-                                st.button(
-                                    "Pakai teks ini sebagai System / rule template",
-                                    on_click=_use_extracted_text_as_system,
-                                )
+                        try:
+                            extracted = extract_text_from_document(doc_file)
+                            st.session_state["_extracted_doc_text"] = extracted
+                            st.text_area("Preview teks hasil ekstraksi", extracted, height=140, disabled=True)
+                        except Exception as e:
+                            st.error(f"Gagal membaca dokumen: {e}")
 
+                st.markdown("**Langkah 2: upload data percakapan** (CSV/Excel/JSON/JSONL)")
+                train_file = st.file_uploader(
+                    "Data percakapan training",
+                    type=["csv", "xlsx", "xls", "json", "jsonl"],
+                    key="train_file_uploader",
+                    help=(
+                        "Kolom `conversations` (format ShareGPT), atau `user`+`assistant` (+`system` opsional) "
+                        "akan terdeteksi otomatis — tidak perlu atur manual kalau kolomnya sudah cocok."
+                    ),
+                )
+
+                if train_file is not None:
+                    df = read_uploaded_table(train_file)
                     cols = list(df.columns)
-                    st.caption(
-                        "Kolom tersedia di data-mu: " + ", ".join(f"`{{{c}}}`" for c in cols)
-                    )
-                    user_placeholder = f"Apa itu {{{cols[0]}}}?" if cols else "Apa itu {nama_kolom}?"
-                    assistant_placeholder = f"{{{cols[1] if len(cols) > 1 else cols[0]}}}" if cols else "{nama_kolom}"
+                    st.write(f"{len(df)} baris, kolom: {cols}")
+                    st.dataframe(df.head())
 
-                    system_template = st.text_area(
-                        "System / rule template (opsional)", key="text_system_template",
-                        placeholder="Kamu adalah asisten produk toko yang ramah.",
-                    )
-                    user_template = st.text_area("User message template", value="", placeholder=user_placeholder)
-                    assistant_template = st.text_area(
-                        "Assistant response template", value="", placeholder=assistant_placeholder
-                    )
-                    st.caption(
-                        "⚠️ Wajib diisi: User message template & Assistant response template "
-                        "(pakai placeholder di atas). Kalau dikosongkan, hasil percakapan akan kosong."
-                    )
+                    resolved = resolve_conversation_columns(df)
 
-                    colp, colb = st.columns(2)
-                    with colp:
-                        if st.button("Preview 3 contoh"):
-                            if not user_template.strip() or not assistant_template.strip():
-                                st.warning("Isi dulu User message template dan Assistant response template.")
-                            else:
+                    if resolved["mode"] == "sharegpt":
+                        st.success("✅ Kolom `conversations` terdeteksi (format ShareGPT) — siap pakai langsung.")
+                        if st.button("Gunakan data ini", type="primary", key="use_sharegpt"):
+                            st.session_state["_raw_dataset"] = sharegpt_df_to_dataset(df)
+                            st.session_state["last_system_prompt"] = ""
+                            st.success("Dataset training siap.")
+
+                    elif resolved["mode"] == "flat":
+                        user_col, assistant_col = resolved["user"], resolved["assistant"]
+                        system_col = resolved.get("system")
+                        doc_text = st.session_state.get("_extracted_doc_text", "")
+                        flat_system_template = f"{{{system_col}}}" if system_col else doc_text
+
+                        st.success(f"✅ Kolom `{user_col}`/`{assistant_col}` terdeteksi — siap pakai langsung.")
+                        st.caption(
+                            "System prompt: " + (
+                                f"diambil dari kolom `{system_col}` per baris" if system_col
+                                else ("dari dokumen di Langkah 1" if doc_text else "kosong (tidak diisi)")
+                            )
+                        )
+                        colp, colb = st.columns(2)
+                        with colp:
+                            if st.button("Preview 3 contoh", key="preview_flat"):
                                 try:
                                     preview = build_conversations_from_template(
-                                        df.head(3), system_template, user_template, assistant_template
+                                        df.head(3), flat_system_template, f"{{{user_col}}}", f"{{{assistant_col}}}"
                                     )
                                     st.json(preview)
                                 except KeyError as e:
-                                    st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
-                    with colb:
-                        if st.button("Bangun dataset dari template", type="primary"):
-                            if not user_template.strip() or not assistant_template.strip():
-                                st.warning("Isi dulu User message template dan Assistant response template.")
-                            else:
-                                try:
-                                    convos = build_conversations_from_template(
-                                        df, system_template, user_template, assistant_template
-                                    )
-                                    st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
-                                    st.session_state["last_system_prompt"] = system_template
-                                    st.success(f"Dataset dibangun: {len(convos)} percakapan.")
-                                except KeyError as e:
-                                    st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
+                                    st.error(f"Kolom {e} tidak ditemukan di data.")
+                        with colb:
+                            if st.button("Gunakan data ini", type="primary", key="use_flat"):
+                                convos = build_conversations_from_template(
+                                    df, flat_system_template, f"{{{user_col}}}", f"{{{assistant_col}}}"
+                                )
+                                st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
+                                st.session_state["last_system_prompt"] = "" if system_col else flat_system_template
+                                st.success(f"Dataset training siap: {len(convos)} percakapan.")
 
-        st.divider()
-        st.subheader("Chat template & split")
-        eval_ratio = st.slider("Porsi data untuk evaluasi (eval split)", 0.0, 0.5, 0.1, 0.05)
+                    else:
+                        st.warning(
+                            "Kolom belum sesuai format standar (`conversations`, atau `user`+`assistant`). "
+                            "Atur pemetaan kolom manual di bawah."
+                        )
+                        with st.expander("⚙️ Atur pemetaan kolom manual", expanded=True):
+                            st.caption(
+                                "Dipakai kalau data-mu berupa fakta mentah (mis. nama_produk/deskripsi/harga) "
+                                "yang perlu dirakit jadi kalimat tanya-jawab, memakai `{nama_kolom}`."
+                            )
+                            doc_text = st.session_state.get("_extracted_doc_text", "")
+                            system_template = st.text_area(
+                                "System / rule template (opsional)", key="text_system_template",
+                                placeholder=(doc_text[:200] if doc_text else "Kamu adalah asisten yang ramah."),
+                            )
+                            user_template = st.text_area(
+                                "User message template", value="",
+                                placeholder=(f"Apa itu {{{cols[0]}}}?" if cols else "Apa itu {nama_kolom}?"),
+                            )
+                            assistant_template = st.text_area(
+                                "Assistant response template", value="",
+                                placeholder=(f"{{{cols[1] if len(cols) > 1 else cols[0]}}}" if cols else "{nama_kolom}"),
+                            )
+                            st.caption(
+                                "⚠️ Wajib diisi: User message template & Assistant response template. "
+                                "Kalau dikosongkan, hasil percakapan akan kosong."
+                            )
+                            colp, colb = st.columns(2)
+                            with colp:
+                                if st.button("Preview 3 contoh", key="preview_manual"):
+                                    if not user_template.strip() or not assistant_template.strip():
+                                        st.warning("Isi dulu User message template dan Assistant response template.")
+                                    else:
+                                        try:
+                                            preview = build_conversations_from_template(
+                                                df.head(3), system_template, user_template, assistant_template
+                                            )
+                                            st.json(preview)
+                                        except KeyError as e:
+                                            st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
+                            with colb:
+                                if st.button("Bangun dataset dari template", type="primary", key="build_manual"):
+                                    if not user_template.strip() or not assistant_template.strip():
+                                        st.warning("Isi dulu User message template dan Assistant response template.")
+                                    else:
+                                        try:
+                                            convos = build_conversations_from_template(
+                                                df, system_template, user_template, assistant_template
+                                            )
+                                            st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
+                                            st.session_state["last_system_prompt"] = system_template
+                                            st.success(f"Dataset dibangun: {len(convos)} percakapan.")
+                                        except KeyError as e:
+                                            st.error(f"Kolom {e} tidak ditemukan di data. Cek nama placeholder-mu.")
 
-        if st.button("Terapkan chat template & siapkan train/eval set", disabled=st.session_state.processor is None):
-            raw_ds = st.session_state.get("_raw_dataset")
-            if raw_ds is None:
-                st.warning("Belum ada dataset dimuat/dibangun di atas.")
+            st.divider()
+            st.subheader("Chat template & split")
+            eval_ratio = st.slider("Porsi data untuk evaluasi (eval split)", 0.0, 0.5, 0.1, 0.05)
+
+            if st.button("Terapkan chat template & siapkan train/eval set", disabled=st.session_state.processor is None):
+                raw_ds = st.session_state.get("_raw_dataset")
+                if raw_ds is None:
+                    st.warning("Belum ada dataset dimuat/dibangun di atas.")
+                else:
+                    with st.spinner("Applying chat template..."):
+                        formatted = apply_chat_template_to_dataset(raw_ds, st.session_state.processor)
+                        train_ds, eval_ds = train_eval_split(formatted, eval_ratio)
+                    st.session_state.train_dataset = train_ds
+                    st.session_state.eval_dataset = eval_ds
+                    st.success(f"Train: {len(train_ds)} baris | Eval: {len(eval_ds) if eval_ds else 0} baris")
+                    st.text_area("Contoh hasil chat template (baris 0)", train_ds[0]["text"], height=200)
+
+        # =================================================================
+        # SUB-TAB 2 — Knowledge Base: katalog produk / dokumen, TIDAK di-training.
+        # Chunk + embed + retrieve secara otomatis per pertanyaan (RAG).
+        # =================================================================
+        with sub_kb:
+            if st.session_state["kb_embeddings"] is not None:
+                st.success(
+                    f"✅ Knowledge Base aktif: {len(st.session_state['kb_sources'])} sumber, "
+                    f"{len(st.session_state['kb_chunks'])} potongan terindeks."
+                )
+            elif st.session_state["kb_chunks"]:
+                st.warning("⚠️ Ada sumber yang belum diindeks — klik 'Bangun Knowledge Base' di bawah.")
             else:
-                with st.spinner("Applying chat template..."):
-                    formatted = apply_chat_template_to_dataset(raw_ds, st.session_state.processor)
-                    train_ds, eval_ds = train_eval_split(formatted, eval_ratio)
-                st.session_state.train_dataset = train_ds
-                st.session_state.eval_dataset = eval_ds
-                st.success(f"Train: {len(train_ds)} baris | Eval: {len(eval_ds) if eval_ds else 0} baris")
-                st.text_area("Contoh hasil chat template (baris 0)", train_ds[0]["text"], height=200)
+                st.warning("⚠️ Belum ada Knowledge Base.")
+            st.caption(
+                "Data di sini **tidak** di-training. Setiap kamu upload katalog produk (CSV/Excel/JSON) "
+                "atau dokumen apapun (PDF/DOCX/TXT/MD), datanya dipecah jadi potongan-potongan kecil. "
+                "Saat chat di tab Test/Evaluate, hanya potongan yang paling relevan dengan pertanyaanmu "
+                "yang otomatis disisipkan ke context — jadi jawabannya selalu berdasarkan data terbaru, "
+                "tanpa training ulang, dan tetap akurat walau pertanyaannya dikasih variasi kata."
+            )
+
+            kb_files = st.file_uploader(
+                "Upload katalog produk (CSV/Excel/JSON/JSONL) dan/atau dokumen (PDF/DOCX/TXT/MD) "
+                "— bisa banyak file sekaligus",
+                type=["csv", "xlsx", "xls", "json", "jsonl", "pdf", "docx", "txt", "md"],
+                accept_multiple_files=True,
+                key="kb_uploader",
+            )
+            TABLE_EXTS = (".csv", ".xlsx", ".xls", ".json", ".jsonl")
+            existing_ids = {s["id"] for s in st.session_state["kb_sources"]}
+            for f in kb_files or []:
+                file_id = f"{f.name}:{f.size}"
+                if file_id in existing_ids:
+                    continue
+                try:
+                    if f.name.lower().endswith(TABLE_EXTS):
+                        kb_df = read_uploaded_table(f)
+                        texts = [row_to_text(row) for _, row in kb_df.iterrows()]
+                        texts = [t for t in texts if t]
+                        source_type = "table"
+                    else:
+                        texts = chunk_text(extract_text_from_document(f))
+                        source_type = "document"
+                except Exception as e:
+                    st.error(f"Gagal memproses '{f.name}': {e}")
+                    continue
+                if not texts:
+                    st.warning(f"'{f.name}' tidak menghasilkan data (kosong).")
+                    continue
+                for t in texts:
+                    st.session_state["kb_chunks"].append({"text": t, "source": f.name})
+                st.session_state["kb_sources"].append(
+                    {"id": file_id, "name": f.name, "type": source_type, "n_chunks": len(texts)}
+                )
+                st.session_state["kb_embeddings"] = None  # stale index, needs rebuild
+
+            if st.session_state["kb_sources"]:
+                st.markdown(
+                    f"**Sumber Knowledge Base ({len(st.session_state['kb_sources'])}, "
+                    f"{len(st.session_state['kb_chunks'])} potongan):**"
+                )
+                for src in st.session_state["kb_sources"]:
+                    c1, c2, c3 = st.columns([4, 2, 1])
+                    c1.write(("📊 " if src["type"] == "table" else "📄 ") + src["name"])
+                    c2.write(f"{src['n_chunks']} potongan")
+                    if c3.button("Hapus", key=f"kb_remove_{src['id']}"):
+                        st.session_state["kb_chunks"] = [
+                            c for c in st.session_state["kb_chunks"] if c["source"] != src["name"]
+                        ]
+                        st.session_state["kb_sources"] = [
+                            s for s in st.session_state["kb_sources"] if s["id"] != src["id"]
+                        ]
+                        st.session_state["kb_embeddings"] = None
+                        st.rerun()
+
+                with st.expander("👀 Preview potongan (3 contoh)"):
+                    for c in st.session_state["kb_chunks"][:3]:
+                        st.text(f"[{c['source']}] {c['text'][:300]}")
+
+            with st.expander("⚙️ Advanced (opsional)"):
+                st.session_state["kb_embedding_model"] = st.text_input(
+                    "Model embedding", value=st.session_state["kb_embedding_model"],
+                    help="Model sentence-transformers multilingual (support Bahasa Indonesia). "
+                    "Ganti model = index harus dibangun ulang.",
+                )
+                st.session_state["kb_top_k"] = st.number_input(
+                    "Jumlah potongan relevan diambil per pertanyaan (top_k)",
+                    min_value=1, max_value=20, value=st.session_state["kb_top_k"],
+                )
+                st.session_state["kb_max_chars"] = st.number_input(
+                    "Batas karakter konteks per pertanyaan", min_value=200,
+                    value=st.session_state["kb_max_chars"], step=100,
+                )
+
+            col_build, col_reset = st.columns(2)
+            with col_build:
+                if st.button("🔧 Bangun Knowledge Base", type="primary", disabled=not st.session_state["kb_chunks"]):
+                    with st.spinner("Memuat model embedding & mengindeks..."):
+                        embedder = get_embedder(st.session_state["kb_embedding_model"])
+                        embeddings = embed_passages(embedder, [c["text"] for c in st.session_state["kb_chunks"]])
+                    st.session_state["kb_embeddings"] = embeddings
+                    st.success(
+                        f"Knowledge Base siap: {len(st.session_state['kb_sources'])} sumber, "
+                        f"{len(st.session_state['kb_chunks'])} potongan diindeks."
+                    )
+            with col_reset:
+                if st.button("🗑️ Reset Knowledge Base"):
+                    st.session_state["kb_sources"] = []
+                    st.session_state["kb_chunks"] = []
+                    st.session_state["kb_embeddings"] = None
+                    st.rerun()
 
     # ----- VISION -----
     elif modality == "Vision":
@@ -577,6 +756,12 @@ with tab_test:
             help="Default terisi dari system prompt yang dipakai waktu membangun dataset training di tab Data — "
             "samakan dengan training supaya perilaku model konsisten.",
         )
+        use_kb = False
+        if st.session_state["kb_embeddings"] is not None:
+            use_kb = st.checkbox(
+                "📦 Sertakan Knowledge Base (ambil potongan relevan otomatis per pertanyaan)",
+                value=True, key="test_include_kb",
+            )
 
         if modality == "Text":
             for msg in st.session_state.chat_history:
@@ -588,11 +773,16 @@ with tab_test:
                 st.session_state.chat_history.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
                     st.markdown(prompt)
+                kb_block, kb_hits = kb_augment(prompt, use_kb)
+                full_system_prompt = f"{system_prompt}\n\n{kb_block}".strip() if kb_block else system_prompt
                 with st.chat_message("assistant"):
+                    if kb_hits:
+                        with st.expander("🔍 Konteks Knowledge Base yang dipakai"):
+                            st.json(kb_hits)
                     response = st.write_stream(
                         stream_chat_response(
                             modality, st.session_state.model, st.session_state.processor,
-                            text=prompt, system_prompt=system_prompt,
+                            text=prompt, system_prompt=full_system_prompt,
                             max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
                             use_adapter=use_adapter,
                         )
@@ -612,10 +802,15 @@ with tab_test:
                 image = Image.open(image_file).convert("RGB")
                 st.image(image, width=300)
                 if st.button("Kirim", type="primary"):
+                    kb_block, kb_hits = kb_augment(question, use_kb)
+                    full_system_prompt = f"{system_prompt}\n\n{kb_block}".strip() if kb_block else system_prompt
+                    if kb_hits:
+                        with st.expander("🔍 Konteks Knowledge Base yang dipakai"):
+                            st.json(kb_hits)
                     response = st.write_stream(
                         stream_chat_response(
                             modality, st.session_state.model, st.session_state.processor,
-                            text=question, image=image, system_prompt=system_prompt,
+                            text=question, image=image, system_prompt=full_system_prompt,
                             max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
                             use_adapter=use_adapter,
                         )
@@ -628,10 +823,15 @@ with tab_test:
                 st.audio(audio_file)
                 if st.button("Kirim", type="primary"):
                     audio_array = load_audio_array(audio_file, f"{SCRATCH_DIR}/test_audio")
+                    kb_block, kb_hits = kb_augment(question, use_kb)
+                    full_system_prompt = f"{system_prompt}\n\n{kb_block}".strip() if kb_block else system_prompt
+                    if kb_hits:
+                        with st.expander("🔍 Konteks Knowledge Base yang dipakai"):
+                            st.json(kb_hits)
                     response = st.write_stream(
                         stream_chat_response(
                             modality, st.session_state.model, st.session_state.processor,
-                            text=question, audio=audio_array, system_prompt=system_prompt,
+                            text=question, audio=audio_array, system_prompt=full_system_prompt,
                             max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
                             use_adapter=use_adapter,
                         )
@@ -668,6 +868,12 @@ with tab_eval:
             key="eval_system_prompt",
             help="Default terisi dari system prompt yang dipakai waktu membangun dataset training di tab Data.",
         )
+        use_kb_eval = False
+        if st.session_state["kb_embeddings"] is not None:
+            use_kb_eval = st.checkbox(
+                "📦 Sertakan Knowledge Base (ambil potongan relevan otomatis per pertanyaan)",
+                value=True, key="eval_include_kb",
+            )
         compare_max_new_tokens = st.slider("max_new_tokens (compare)", 16, 512, 256, 16, key="compare_tokens")
         items = None
 
@@ -678,7 +884,11 @@ with tab_eval:
                 if not prompts:
                     st.warning("Isi minimal satu prompt.")
                 else:
-                    items = [{"text": p} for p in prompts]
+                    items = []
+                    for p in prompts:
+                        kb_block, _ = kb_augment(p, use_kb_eval)
+                        sp = f"{system_prompt_eval}\n\n{kb_block}".strip() if kb_block else system_prompt_eval
+                        items.append({"text": p, "system_prompt": sp})
 
         elif modality == "Vision":
             question = st.text_input("Pertanyaan untuk tiap gambar", value="Apa isi gambar ini?")
@@ -689,7 +899,9 @@ with tab_eval:
                 else:
                     from PIL import Image
 
-                    items = [{"text": question, "image": Image.open(f).convert("RGB")} for f in image_files]
+                    kb_block, _ = kb_augment(question, use_kb_eval)
+                    sp = f"{system_prompt_eval}\n\n{kb_block}".strip() if kb_block else system_prompt_eval
+                    items = [{"text": question, "image": Image.open(f).convert("RGB"), "system_prompt": sp} for f in image_files]
 
         else:  # Audio
             question = st.text_input("Pertanyaan untuk tiap audio", value="Please transcribe this audio.")
@@ -698,8 +910,10 @@ with tab_eval:
                 if not audio_files:
                     st.warning("Upload minimal satu audio.")
                 else:
+                    kb_block, _ = kb_augment(question, use_kb_eval)
+                    sp = f"{system_prompt_eval}\n\n{kb_block}".strip() if kb_block else system_prompt_eval
                     items = [
-                        {"text": question, "audio": load_audio_array(f, f"{SCRATCH_DIR}/eval_audio")}
+                        {"text": question, "audio": load_audio_array(f, f"{SCRATCH_DIR}/eval_audio"), "system_prompt": sp}
                         for f in audio_files
                     ]
 
