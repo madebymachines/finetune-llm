@@ -157,6 +157,19 @@ with tab_setup:
         load_in_4bit = st.checkbox("Load in 4-bit", value=True)
 
     if st.button("Load Model", type="primary", disabled=not cuda_info["available"]):
+        # Release whatever was loaded before (model, trainer + its optimizer/gradients)
+        # first — otherwise the old model stays pinned in GPU memory via st.session_state.trainer
+        # even after we overwrite st.session_state.model, and it silently doubles VRAM usage
+        # in a way clear_gpu_cache() alone can't fix (it's a live reference, not stale cache).
+        st.session_state.model = None
+        st.session_state.processor = None
+        st.session_state.trainer = None
+        st.session_state.lora_applied = False
+        st.session_state.trained = False
+        st.session_state.train_dataset = None
+        st.session_state.eval_dataset = None
+        clear_gpu_cache()
+
         with st.spinner(f"Loading {model_name} ({modality})..."):
             model, processor = load_model_and_processor(modality, model_name, int(max_seq_length), load_in_4bit)
         st.session_state.model = model
@@ -837,6 +850,13 @@ with tab_train:
         if st.button("🚀 Start Training", type="primary"):
             sft_kwargs = dict(
                 per_device_train_batch_size=int(per_device_train_batch_size),
+                # HF's TrainingArguments defaults per_device_eval_batch_size to 8
+                # independently of the train batch size if it's never set — that
+                # silently makes trainer.evaluate() (Eval Loss) allocate activations
+                # for an 8x bigger batch than training ever used, even though
+                # training itself fits fine. Pin it to the same batch size so
+                # eval never asks for more memory than training already proved fits.
+                per_device_eval_batch_size=int(per_device_train_batch_size),
                 gradient_accumulation_steps=int(gradient_accumulation_steps),
                 learning_rate=float(learning_rate),
                 logging_steps=int(logging_steps),
