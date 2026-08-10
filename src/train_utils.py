@@ -163,6 +163,12 @@ def build_trainer(modality: str, model, processor, train_dataset, eval_dataset, 
                 dataset_text_field="",
                 dataset_kwargs={"skip_prepare_dataset": True},
                 report_to="none",
+                # compute_eval_loss() only reads metrics["eval_loss"], never predictions —
+                # without this, Trainer.evaluate() accumulates full [seq_len, vocab_size]
+                # logits per example on GPU for the whole eval pass, which is enormous for
+                # Gemma's ~256k-token vocab and was the real cause of Eval-Loss-only OOMs.
+                prediction_loss_only=True,
+                eval_accumulation_steps=1,
                 **sft_kwargs,
             ),
         )
@@ -175,7 +181,13 @@ def build_trainer(modality: str, model, processor, train_dataset, eval_dataset, 
         tokenizer=processor,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        args=SFTConfig(dataset_text_field="text", report_to="none", **sft_kwargs),
+        args=SFTConfig(
+            dataset_text_field="text",
+            report_to="none",
+            prediction_loss_only=True,
+            eval_accumulation_steps=1,
+            **sft_kwargs,
+        ),
     )
     trainer = train_on_responses_only(
         trainer,
