@@ -35,7 +35,7 @@ from src.data_utils import (
     train_eval_split,
 )
 from src.eval_utils import before_after_compare, compute_eval_loss, stream_chat_response
-from src.gpu_utils import check_cuda, memory_snapshot
+from src.gpu_utils import check_cuda, clear_gpu_cache, memory_snapshot
 from src.retrieval import embed_passages, embed_query, get_embedder, retrieve_top_chunks
 from src.train_utils import (
     StreamlitTrainerCallback,
@@ -111,7 +111,16 @@ if not cuda_info["available"]:
         "dengan CUDA (Colab, RunPod, Lambda, atau server GPU on-prem)."
     )
 else:
-    st.success(f"GPU terdeteksi: {cuda_info['name']} ({cuda_info['total_gb']} GB)")
+    col_gpu1, col_gpu2 = st.columns([4, 1])
+    with col_gpu1:
+        st.success(
+            f"GPU terdeteksi: {cuda_info['name']} ({cuda_info['total_gb']} GB) | "
+            f"Reserved memory: {memory_snapshot()} GB"
+        )
+    with col_gpu2:
+        if st.button("🧹 Bersihkan GPU cache", help="Lepas memori CUDA yang masih ditahan tapi tidak dipakai aktif (sisa training, fragmentasi cache) — tidak menghapus model/adapter yang sedang dimuat."):
+            clear_gpu_cache()
+            st.rerun()
 
 tab_setup, tab_data, tab_train, tab_test, tab_eval = st.tabs(
     ["⚙️ Setup", "📊 Data", "🚀 Train", "💬 Test", "📈 Evaluate"]
@@ -875,6 +884,7 @@ with tab_train:
             st.session_state.trained = True
             used_mem = memory_snapshot()
             start_mem = st.session_state.start_gpu_mem or 0
+            clear_gpu_cache()  # release freed training buffers (gradients, optimizer scratch) before Test/Evaluate need GPU headroom for generation
             st.success(
                 f"Training selesai dalam {round(stats.metrics['train_runtime'] / 60, 2)} menit. "
                 f"Peak reserved memory: {used_mem} GB (delta training: {round(used_mem - start_mem, 3)} GB)."
@@ -1021,8 +1031,8 @@ with tab_eval:
     else:
         system_prompt_eval = st.text_input(
             "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
-            key="eval_system_prompt",
-            help="Default terisi dari system prompt yang dipakai waktu membangun dataset training di tab Data.",
+            help="Otomatis ikut berubah setiap kamu rebuild dataset training di tab Data dengan system prompt "
+            "baru (sama seperti tab Test) — edit manual di sini kalau mau uji varian lain.",
         )
         use_kb_eval = False
         if st.session_state["kb_embeddings"] is not None:
