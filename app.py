@@ -65,6 +65,7 @@ defaults = {
     "eval_log": [],
     "chat_history": [],
     "last_system_prompt": "",
+    "persona_system_prompt": "",
     "kb_sources": [],
     "kb_chunks": [],
     "kb_embeddings": None,
@@ -274,10 +275,33 @@ with tab_data:
                                 height=140, disabled=True,
                             )
 
+                st.markdown("**System prompt untuk training** (dipakai di semua baris kecuali kolom `system` diisi manual di tabel Langkah 2)")
+                st.caption(
+                    "⚠️ Jangan tempel seluruh isi dokumen di sini — system prompt yang kepanjangan bikin "
+                    "training gagal (response ke-truncate sebelum sempat dipelajari, karena diulang di "
+                    "**setiap** baris). Ringkas saja persona & batasannya; contoh dialog di dokumen sudah "
+                    "otomatis masuk sebagai baris training terpisah di tabel Langkah 2, tidak perlu diulang di sini."
+                )
+
+                def _prefill_persona_system_prompt():
+                    st.session_state["persona_system_prompt"] = st.session_state.get("_extracted_doc_text", "")[:500].strip()
+
+                if st.session_state.get("_extracted_doc_text"):
+                    st.button(
+                        "Isi dari cuplikan dokumen (500 karakter pertama — edit lagi setelahnya)",
+                        key="prefill_persona_system_btn", on_click=_prefill_persona_system_prompt,
+                    )
+                st.text_area("System prompt", key="persona_system_prompt", height=100)
+                if len(st.session_state["persona_system_prompt"]) > 800:
+                    st.warning(
+                        "System prompt ini >800 karakter. Kalau training gagal karena truncation, "
+                        "persingkat system prompt ini, atau naikkan 'Max sequence length' di tab Setup."
+                    )
+
                 st.markdown("**Langkah 2: contoh percakapan** (auto-extract dari dokumen di atas + bisa diedit)")
                 st.caption(
-                    "Kolom `system` kosong = pakai teks dokumen Langkah 1 sebagai system prompt baris itu. "
-                    "Bisa juga isi/tambah baris manual di sini walau tidak upload dokumen sama sekali."
+                    "Kolom `system` kosong = pakai System prompt di atas untuk baris itu. Bisa juga isi/tambah "
+                    "baris manual di sini walau tidak upload dokumen sama sekali."
                 )
                 if "_persona_examples_df" not in st.session_state:
                     st.session_state["_persona_examples_df"] = pd.DataFrame(columns=["system", "user", "assistant"])
@@ -303,11 +327,11 @@ with tab_data:
                     if valid_rows.empty:
                         st.warning("Tabel masih kosong — isi minimal satu baris `user` + `assistant`.")
                     else:
-                        doc_text = st.session_state.get("_extracted_doc_text", "")
+                        default_system = st.session_state.get("persona_system_prompt", "").strip()
                         convos = []
                         for _, row in valid_rows.iterrows():
                             convo = []
-                            sys_msg = str(row.get("system", "")).strip() or doc_text
+                            sys_msg = str(row.get("system", "")).strip() or default_system
                             if sys_msg:
                                 convo.append({"role": "system", "content": sys_msg})
                             convo.append({"role": "user", "content": str(row["user"])})
@@ -315,7 +339,7 @@ with tab_data:
                             convos.append(convo)
                         st.session_state["_raw_dataset"] = conversations_to_dataset(convos)
                         any_row_system = (valid_rows["system"].astype(str).str.strip() != "").any()
-                        st.session_state["last_system_prompt"] = "" if any_row_system else doc_text
+                        st.session_state["last_system_prompt"] = "" if any_row_system else default_system
                         st.success(f"Dataset training siap: {len(convos)} percakapan.")
 
                 st.divider()
@@ -348,14 +372,14 @@ with tab_data:
                     elif resolved["mode"] == "flat":
                         user_col, assistant_col = resolved["user"], resolved["assistant"]
                         system_col = resolved.get("system")
-                        doc_text = st.session_state.get("_extracted_doc_text", "")
-                        flat_system_template = f"{{{system_col}}}" if system_col else doc_text
+                        default_system = st.session_state.get("persona_system_prompt", "").strip()
+                        flat_system_template = f"{{{system_col}}}" if system_col else default_system
 
                         st.success(f"✅ Kolom `{user_col}`/`{assistant_col}` terdeteksi — siap pakai langsung.")
                         st.caption(
                             "System prompt: " + (
                                 f"diambil dari kolom `{system_col}` per baris" if system_col
-                                else ("dari dokumen di Langkah 1" if doc_text else "kosong (tidak diisi)")
+                                else ("dari 'System prompt untuk training' di atas" if default_system else "kosong (tidak diisi)")
                             )
                         )
                         colp, colb = st.columns(2)
