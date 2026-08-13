@@ -4,6 +4,8 @@ import math
 import re
 import threading
 
+import torch
+
 from .constants import DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P
 
 
@@ -14,8 +16,24 @@ def compute_eval_loss(trainer):
     return metrics, perplexity
 
 
-def build_messages(modality: str, text: str, image=None, audio=None, system_prompt: str = ""):
-    """Build a chat-template-ready messages list for the given modality."""
+# Cap how many prior turns get replayed into the model on every new message.
+# Without this, a long Test-tab chat session would make each turn's prompt
+# grow without bound — slower every message, and eventually risks blowing
+# past max_seq_length (the same truncation/OOM class of issue this project
+# has hit before, just triggered by chat length instead of dataset rows).
+_MAX_HISTORY_MESSAGES = 20  # ~10 back-and-forth exchanges
+
+
+def build_messages(modality: str, text: str, image=None, audio=None, system_prompt: str = "", history: list[dict] | None = None):
+    """Build a chat-template-ready messages list for the given modality.
+
+    `history` (optional): prior turns as [{"role": "user"/"assistant", "content": str}, ...],
+    oldest first, NOT including the current `text` turn (that's appended separately below as
+    the final user message, along with any image/audio). Only the most recent
+    `_MAX_HISTORY_MESSAGES` are kept. Without this, every reply is generated with zero
+    awareness of earlier turns — the model can't refer back to anything said before, and
+    tends to answer as if the conversation just started (e.g. opening with a greeting) every
+    single time, since that's structurally what a single, history-less turn looks like."""
     user_content = []
     if modality == "Audio" and audio is not None:
         user_content.append({"type": "audio", "audio": audio})
@@ -26,6 +44,8 @@ def build_messages(modality: str, text: str, image=None, audio=None, system_prom
     messages = []
     if system_prompt.strip():
         messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
+    for turn in (history or [])[-_MAX_HISTORY_MESSAGES:]:
+        messages.append({"role": turn["role"], "content": [{"type": "text", "text": turn["content"]}]})
     messages.append({"role": "user", "content": user_content})
     return messages
 
@@ -54,13 +74,14 @@ def generate_response(
     image=None,
     audio=None,
     system_prompt: str = "",
+    history: list[dict] | None = None,
     max_new_tokens: int = 256,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
     top_k: int = DEFAULT_TOP_K,
     use_adapter: bool = True,
 ) -> str:
-    messages = build_messages(modality, text, image=image, audio=audio, system_prompt=system_prompt)
+    messages = build_messages(modality, text, image=image, audio=audio, system_prompt=system_prompt, history=history)
     inputs = _prepare_inputs(modality, processor, messages, image, model.device)
     gen_kwargs = dict(
         **inputs,
@@ -80,6 +101,88 @@ def generate_response(
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+def generate_batch(
+    modality,
+    model,
+    processor,
+    texts: list[str],
+    system_prompt: str = "",
+    max_new_tokens: int = 256,
+    temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float = DEFAULT_TOP_P,
+    top_k: int = DEFAULT_TOP_K,
+    use_adapter: bool = True,
+) -> list[str]:
+    """Text-only batched generation: builds one left-padded batch and calls
+    model.generate() ONCE for the whole list, instead of once per prompt like
+    generate_response(). Far fewer generate() calls for the same work, and
+    the GPU actually gets to parallelize across sequences instead of sitting
+    at low utilization between one-at-a-time calls.
+
+    Trade-off: every sequence in the batch holds its activations/KV-cache in
+    VRAM at the same time, so a bigger batch uses more memory — callers
+    should chunk large item lists into modest-sized batches (see
+    before_after_compare's `batch_size` param) rather than passing everything
+    at once, same headroom concerns as elsewhere in this app.
+
+    Vision/Audio aren't supported here — image/audio batching would need
+    per-modality collation this app doesn't implement, and the slow case
+    this was built for (large eval-split comparisons) is Text-only anyway."""
+    if modality != "Text":
+        raise ValueError("generate_batch only supports modality='Text'")
+    if not texts:
+        return []
+
+    tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+    # Tokenize each prompt on its own first (unpadded) so we know how long
+    # every sequence actually is, then left-pad them all to the batch's max
+    # length ourselves. Left-padding (not right) is what makes batched
+    # decoder-only generation correct: it keeps every prompt's last real
+    # token flush against the same column, so `model.generate()` continues
+    # all sequences from a shared position instead of continuing mid-padding
+    # for the shorter ones.
+    per_item_ids = []
+    for text in texts:
+        messages = build_messages(modality, text, system_prompt=system_prompt)
+        encoded = processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt",
+        )
+        per_item_ids.append(encoded["input_ids"][0])
+
+    max_len = max(ids.shape[0] for ids in per_item_ids)
+    input_ids = torch.full((len(per_item_ids), max_len), pad_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(per_item_ids), max_len), dtype=torch.long)
+    for i, ids in enumerate(per_item_ids):
+        n = ids.shape[0]
+        input_ids[i, max_len - n:] = ids
+        attention_mask[i, max_len - n:] = 1
+    input_ids = input_ids.to(model.device)
+    attention_mask = attention_mask.to(model.device)
+
+    gen_kwargs = dict(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        use_cache=True,
+        pad_token_id=pad_id,
+    )
+    if use_adapter:
+        out = model.generate(**gen_kwargs)
+    else:
+        with model.disable_adapter():
+            out = model.generate(**gen_kwargs)
+
+    # Left-padding means every row's prompt ends at the same column, so one
+    # shared slice index recovers each row's newly generated tokens.
+    new_tokens = out[:, input_ids.shape[1]:]
+    return [tokenizer.decode(seq, skip_special_tokens=True) for seq in new_tokens]
+
+
 _QA_PAIR_RE = re.compile(r'Q\d*\s*:\s*(.+?)\s*\n\s*A\d*\s*:\s*(.+?)(?=\n\s*Q\d*\s*:|\Z)', re.DOTALL | re.IGNORECASE)
 # The last matched answer absorbs any trailing text the model writes after the
 # final Q/A block (the regex has no marker to stop at otherwise) — cap length
@@ -89,26 +192,34 @@ _QA_PAIR_RE = re.compile(r'Q\d*\s*:\s*(.+?)\s*\n\s*A\d*\s*:\s*(.+?)(?=\n\s*Q\d*\
 _MAX_LLM_QA_CHARS = 500
 
 
-def generate_qa_pairs_llm(model, processor, df, questions_per_row: int = 2, max_new_tokens: int = 300) -> list[dict]:
+def generate_qa_pairs_llm(
+    model, processor, df, questions_per_row: int = 2, max_new_tokens: int = 300, batch_size: int = 4,
+) -> list[dict]:
     """Alternative to data_utils.auto_generate_qa_rows() that asks the
     already-loaded model to write `questions_per_row` naturally-varied Q&A
     pairs per row, strictly grounded in that row's own column values, instead
-    of the fixed rule-based templates. Costs one generate() call per row, so
-    it's an opt-in the caller should gate behind a model-loaded check and a
-    progress spinner — this function has no Streamlit/UI awareness itself.
+    of the fixed rule-based templates. It's an opt-in the caller should gate
+    behind a model-loaded check and a progress spinner — this function has no
+    Streamlit/UI awareness itself.
 
-    use_adapter defaults to True (via generate_response) rather than False:
+    Rows are processed `batch_size` at a time via generate_batch() — one
+    model.generate() call per chunk of rows instead of one per row, same
+    technique as before_after_compare's Evaluate-tab speedup. Still linear in
+    row count (a big catalog is still a big catalog), just far fewer, better
+    -utilized GPU calls to get there.
+
+    use_adapter defaults to True (via generate_batch) rather than False:
     at Data-tab time a LoRA adapter may not even be attached yet (Setup's
     "Apply LoRA" step is independent of Data tab), and model.disable_adapter()
     raises on a plain (non-PEFT) model — True works unconditionally, and an
     untrained adapter (zero-initialized B matrix) behaves identically to the
     base model anyway."""
-    rows = []
+    prompts = []
     for _, row in df.iterrows():
         facts = "\n".join(f"- {c}: {v}" for c, v in row.items() if v == v and str(v).strip())  # v == v filters NaN
         if not facts:
             continue
-        prompt = (
+        prompts.append(
             f"Berikut data satu produk/item:\n{facts}\n\n"
             f"Buat {questions_per_row} pasang pertanyaan dan jawaban dalam Bahasa Indonesia tentang data ini. "
             "Pertanyaannya harus bervariasi gayanya (jangan semua diawali 'Apa itu'). "
@@ -116,13 +227,17 @@ def generate_qa_pairs_llm(model, processor, df, questions_per_row: int = 2, max_
             "Format WAJIB persis seperti ini, satu pasang per blok:\n"
             "Q1: <pertanyaan>\nA1: <jawaban>\nQ2: <pertanyaan>\nA2: <jawaban>"
         )
-        text = generate_response(
-            "Text", model, processor, text=prompt, max_new_tokens=max_new_tokens, temperature=0.7,
-        )
-        for q, a in _QA_PAIR_RE.findall(text):
-            q, a = q.strip(), a.strip()
-            if q and a and len(q) <= _MAX_LLM_QA_CHARS and len(a) <= _MAX_LLM_QA_CHARS:
-                rows.append({"user": q, "assistant": a})
+
+    rows = []
+    step = max(1, batch_size)
+    for start in range(0, len(prompts), step):
+        chunk = prompts[start:start + step]
+        outputs = generate_batch("Text", model, processor, chunk, max_new_tokens=max_new_tokens, temperature=0.7)
+        for text in outputs:
+            for q, a in _QA_PAIR_RE.findall(text):
+                q, a = q.strip(), a.strip()
+                if q and a and len(q) <= _MAX_LLM_QA_CHARS and len(a) <= _MAX_LLM_QA_CHARS:
+                    rows.append({"user": q, "assistant": a})
     return rows
 
 
@@ -134,6 +249,7 @@ def stream_chat_response(
     image=None,
     audio=None,
     system_prompt: str = "",
+    history: list[dict] | None = None,
     max_new_tokens: int = 256,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
@@ -143,7 +259,7 @@ def stream_chat_response(
     """Generator yielding text chunks, for use with st.write_stream."""
     from transformers import TextIteratorStreamer
 
-    messages = build_messages(modality, text, image=image, audio=audio, system_prompt=system_prompt)
+    messages = build_messages(modality, text, image=image, audio=audio, system_prompt=system_prompt, history=history)
     inputs = _prepare_inputs(modality, processor, messages, image, model.device)
     tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -254,10 +370,36 @@ def before_after_compare(
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
     top_k: int = DEFAULT_TOP_K,
+    batch_size: int = 4,
 ):
     """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray}.
     For each item, generate with the LoRA adapter disabled (base model
-    behaviour) and enabled (finetuned), reusing the same loaded weights."""
+    behaviour) and enabled (finetuned), reusing the same loaded weights.
+
+    Text modality processes items `batch_size` at a time via generate_batch()
+    — 2 * ceil(len(items) / batch_size) total generate() calls instead of
+    2 * len(items), which is what made large eval-split comparisons slow.
+    Vision/Audio still run one item at a time (see generate_batch's
+    docstring for why)."""
+    if modality == "Text":
+        prompts = [item["text"] for item in items]
+        results = []
+        step = max(1, batch_size)
+        for start in range(0, len(prompts), step):
+            chunk = prompts[start:start + step]
+            shared_kwargs = dict(
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+            )
+            base_outputs = generate_batch(modality, model, processor, chunk, use_adapter=False, **shared_kwargs)
+            finetuned_outputs = generate_batch(modality, model, processor, chunk, use_adapter=True, **shared_kwargs)
+            for prompt, base_out, finetuned_out in zip(chunk, base_outputs, finetuned_outputs):
+                results.append({"prompt": prompt, "base_model": base_out, "finetuned_model": finetuned_out})
+        return results
+
     results = []
     for item in items:
         kwargs = dict(

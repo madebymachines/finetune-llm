@@ -274,17 +274,29 @@ with tab_data:
                             horizontal=True, key="qa_conv_method",
                             help="Rule-based: instan, gratis, jawaban selalu persis dari kolom aslinya. "
                             "Gemma: pertanyaan lebih variatif gayanya, tapi butuh model sudah dimuat & "
-                            "makan waktu GPU sebanding jumlah baris (1x generate per baris).",
+                            "makan waktu GPU sebanding jumlah baris (diproses per batch, tapi tetap linear "
+                            "terhadap jumlah baris).",
                         )
                         use_llm = conv_method.startswith("🤖")
                         if use_llm and st.session_state.model is None:
                             st.warning("Model belum dimuat di tab Setup — pakai metode rule-based dulu untuk sekarang.")
                             use_llm = False
                         n_per_row = 2
+                        qa_batch_size = 4
                         if use_llm:
-                            n_per_row = st.number_input(
-                                "Jumlah pertanyaan per baris", min_value=1, max_value=5, value=2, key="qa_llm_n"
-                            )
+                            qa_col1, qa_col2 = st.columns(2)
+                            with qa_col1:
+                                n_per_row = st.number_input(
+                                    "Jumlah pertanyaan per baris", min_value=1, max_value=5, value=2, key="qa_llm_n"
+                                )
+                            with qa_col2:
+                                qa_batch_size = st.slider(
+                                    "Ukuran batch", 1, 16, 4, 1, key="qa_llm_batch_size",
+                                    help="Berapa baris data diproses sekaligus dalam satu pemanggilan "
+                                    "model.generate() — makin besar, makin sedikit pemanggilan jadi makin "
+                                    "cepat, tapi makin banyak VRAM GPU yang dipakai bersamaan. Turunkan "
+                                    "kalau kena OOM.",
+                                )
 
                         already_generated = st.session_state.get("_qa_source_id") == source_id
                         regenerate = False
@@ -298,12 +310,12 @@ with tab_data:
                         if not already_generated or regenerate:
                             if use_llm:
                                 with st.spinner(
-                                    f"Menghasilkan Q&A dengan Gemma untuk {len(df)} baris — bisa beberapa "
-                                    "menit untuk data yang besar, karena tiap baris butuh 1x generate..."
+                                    f"Menghasilkan Q&A dengan Gemma untuk {len(df)} baris (diproses per "
+                                    "batch) — masih bisa beberapa menit untuk data yang besar..."
                                 ):
                                     rows = generate_qa_pairs_llm(
                                         st.session_state.model, st.session_state.processor, df,
-                                        questions_per_row=int(n_per_row),
+                                        questions_per_row=int(n_per_row), batch_size=int(qa_batch_size),
                                     )
                             else:
                                 rows = auto_generate_qa_rows(df)
@@ -673,8 +685,9 @@ with tab_test:
         max_new_tokens = st.slider("max_new_tokens", 16, 1024, 256, 16)
 
         if modality == "Text":
-            system_prompt = st.text_input(
+            system_prompt = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
                 help="Cuma dipakai saat chat di sini — tidak ikut masuk ke data training (training-nya murni "
                 "user/assistant, tanpa system prompt).",
             )
@@ -692,19 +705,29 @@ with tab_test:
                         stream_chat_response(
                             modality, st.session_state.model, st.session_state.processor,
                             text=prompt, system_prompt=system_prompt,
+                            # All prior turns except the one just appended above (that one is
+                            # `text=prompt` already) — so the model actually has conversation
+                            # context instead of treating every message as a fresh start.
+                            history=st.session_state.chat_history[:-1],
                             max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
                             use_adapter=use_adapter,
                         )
                     )
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
 
-            if st.session_state.chat_history and st.button("Bersihkan riwayat chat"):
-                st.session_state.chat_history = []
-                st.rerun()
+            if st.session_state.chat_history:
+                st.caption(
+                    "Riwayat percakapan (maks 20 pesan terakhir) ikut dikirim ke model tiap giliran, "
+                    "supaya jawabannya nyambung ke konteks sebelumnya."
+                )
+                if st.button("Bersihkan riwayat chat"):
+                    st.session_state.chat_history = []
+                    st.rerun()
 
         elif modality == "Vision":
-            system_prompt = st.text_input(
+            system_prompt = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
             )
             image_file = st.file_uploader("Upload gambar", type=["png", "jpg", "jpeg", "webp"], key="test_image")
             question = st.text_input("Pertanyaan", value="Apa isi gambar ini?")
@@ -724,8 +747,9 @@ with tab_test:
                     )
 
         else:  # Audio
-            system_prompt = st.text_input(
+            system_prompt = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
             )
             audio_file = st.file_uploader("Upload audio", type=["wav", "mp3", "flac", "m4a"], key="test_audio")
             question = st.text_input("Pertanyaan", value="Please transcribe this audio.")
@@ -752,12 +776,19 @@ with tab_eval:
         st.warning("Perlu LoRA adapter aktif untuk membandingkan base vs finetuned.")
     else:
         compare_max_new_tokens = st.slider("max_new_tokens (compare)", 16, 512, 256, 16, key="compare_tokens")
+        compare_batch_size = st.slider(
+            "Ukuran batch (compare, khusus modality Text)", 1, 16, 4, 1, key="compare_batch_size",
+            help="Berapa prompt diproses sekaligus dalam satu pemanggilan model.generate() (Text saja — "
+            "Vision/Audio tetap satu per satu). Makin besar, makin sedikit pemanggilan generate() jadi makin "
+            "cepat, tapi makin banyak VRAM GPU yang dipakai bersamaan — turunkan kalau kena OOM.",
+        )
         system_prompt_eval = ""
         items = None
 
         if modality == "Text":
-            system_prompt_eval = st.text_input(
+            system_prompt_eval = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
                 help="Cuma dipakai saat generate di sini — tidak ikut masuk ke data training.",
             )
 
@@ -793,8 +824,9 @@ with tab_eval:
                     st.session_state["_eval_expected_map"] = {}  # no ground-truth answer to check against
 
         elif modality == "Vision":
-            system_prompt_eval = st.text_input(
+            system_prompt_eval = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
             )
             question = st.text_input("Pertanyaan untuk tiap gambar", value="Apa isi gambar ini?")
             image_files = st.file_uploader("Upload gambar (bisa lebih dari satu)", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True, key="eval_images")
@@ -807,8 +839,9 @@ with tab_eval:
                     items = [{"text": question, "image": Image.open(f).convert("RGB")} for f in image_files]
 
         else:  # Audio
-            system_prompt_eval = st.text_input(
+            system_prompt_eval = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                height=100,
             )
             question = st.text_input("Pertanyaan untuk tiap audio", value="Please transcribe this audio.")
             audio_files = st.file_uploader("Upload audio (bisa lebih dari satu)", type=["wav", "mp3", "flac", "m4a"], accept_multiple_files=True, key="eval_audios")
@@ -826,6 +859,7 @@ with tab_eval:
                 results = before_after_compare(
                     modality, st.session_state.model, st.session_state.processor, items,
                     system_prompt=system_prompt_eval, max_new_tokens=compare_max_new_tokens,
+                    batch_size=compare_batch_size,
                 )
             expected_map = st.session_state.get("_eval_expected_map", {}) if modality == "Text" else {}
             if expected_map:
