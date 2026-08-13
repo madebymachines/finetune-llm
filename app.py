@@ -28,7 +28,7 @@ from src.data_utils import (
     sharegpt_df_to_dataset,
     train_eval_split,
 )
-from src.eval_utils import before_after_compare, generate_qa_pairs_llm, stream_chat_response
+from src.eval_utils import before_after_compare, check_factual_grounding, generate_qa_pairs_llm, stream_chat_response
 from src.gpu_utils import check_cuda, clear_gpu_cache, memory_snapshot
 from src.train_utils import (
     StreamlitTrainerCallback,
@@ -395,8 +395,14 @@ with tab_data:
                 with st.spinner("Applying chat template..."):
                     formatted = apply_chat_template_to_dataset(raw_ds, st.session_state.processor)
                     train_ds, eval_ds = train_eval_split(formatted, eval_ratio)
+                    # Same split, but on the pre-template conversations (still has clean
+                    # separate user/assistant fields) — needed so Evaluate can pull
+                    # "prompt, expected answer" pairs for the automatic fact-check,
+                    # since `eval_ds` above only has the fully-templated "text" string.
+                    _, raw_eval_ds = train_eval_split(raw_ds, eval_ratio)
                 st.session_state.train_dataset = train_ds
                 st.session_state.eval_dataset = eval_ds
+                st.session_state["_raw_eval_dataset"] = raw_eval_ds
                 st.success(f"Train: {len(train_ds)} baris | Eval: {len(eval_ds) if eval_ds else 0} baris")
                 st.text_area("Contoh hasil chat template (baris 0)", train_ds[0]["text"], height=200)
 
@@ -667,6 +673,11 @@ with tab_test:
         max_new_tokens = st.slider("max_new_tokens", 16, 1024, 256, 16)
 
         if modality == "Text":
+            system_prompt = st.text_input(
+                "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                help="Cuma dipakai saat chat di sini — tidak ikut masuk ke data training (training-nya murni "
+                "user/assistant, tanpa system prompt).",
+            )
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
@@ -680,7 +691,7 @@ with tab_test:
                     response = st.write_stream(
                         stream_chat_response(
                             modality, st.session_state.model, st.session_state.processor,
-                            text=prompt,
+                            text=prompt, system_prompt=system_prompt,
                             max_new_tokens=max_new_tokens, temperature=temperature, top_p=top_p, top_k=top_k,
                             use_adapter=use_adapter,
                         )
@@ -745,13 +756,41 @@ with tab_eval:
         items = None
 
         if modality == "Text":
-            prompts_text = st.text_area("Prompt uji (satu per baris)", height=150, placeholder="Apa itu produk X?\n...")
+            system_prompt_eval = st.text_input(
+                "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                help="Cuma dipakai saat generate di sini — tidak ikut masuk ke data training.",
+            )
+
+            raw_eval = st.session_state.get("_raw_eval_dataset")
+            if raw_eval is not None and len(raw_eval) > 0:
+                if st.button("🎯 Pakai contoh dari eval split (otomatis cek fakta)", key="use_eval_split_prompts"):
+                    eval_items, expected_map = [], {}
+                    for convo in raw_eval["conversations"]:
+                        user_msgs = [m["content"] for m in convo if m["role"] == "user"]
+                        assistant_msgs = [m["content"] for m in convo if m["role"] == "assistant"]
+                        if user_msgs and assistant_msgs:
+                            eval_items.append({"text": user_msgs[0]})
+                            expected_map[user_msgs[0]] = assistant_msgs[0]
+                    items = eval_items
+                    st.session_state["_eval_expected_map"] = expected_map
+                st.caption(
+                    f"Ambil {len(raw_eval)} pertanyaan dari eval split (data yang tidak ikut training) — "
+                    "otomatis cek apakah fakta dari jawaban aslinya muncul di jawaban model."
+                )
+            else:
+                st.caption(
+                    "Belum ada eval split — set 'Porsi data untuk evaluasi' > 0 di tab Data lalu 'Terapkan chat "
+                    "template & siapkan train/eval set', supaya bisa pakai cek fakta otomatis di sini."
+                )
+
+            prompts_text = st.text_area("Atau tulis prompt sendiri (satu per baris)", height=150, placeholder="Apa itu produk X?\n...")
             if st.button("Bandingkan Base vs Finetuned", type="primary"):
                 prompts = [p.strip() for p in prompts_text.splitlines() if p.strip()]
                 if not prompts:
                     st.warning("Isi minimal satu prompt.")
                 else:
                     items = [{"text": p} for p in prompts]
+                    st.session_state["_eval_expected_map"] = {}  # no ground-truth answer to check against
 
         elif modality == "Vision":
             system_prompt_eval = st.text_input(
@@ -788,11 +827,28 @@ with tab_eval:
                     modality, st.session_state.model, st.session_state.processor, items,
                     system_prompt=system_prompt_eval, max_new_tokens=compare_max_new_tokens,
                 )
+            expected_map = st.session_state.get("_eval_expected_map", {}) if modality == "Text" else {}
+            if expected_map:
+                for r in results:
+                    expected = expected_map.get(r["prompt"])
+                    check = check_factual_grounding(expected, r["finetuned_model"]) if expected else None
+                    if check and check["score"] is not None:
+                        r["fakta_terpenuhi"] = f"{check['verdict']} {round(check['score'] * 100)}%"
+                        r["fakta_hilang"] = ", ".join(check["missed"])
+                    else:
+                        r["fakta_terpenuhi"] = "–"
+                        r["fakta_hilang"] = ""
             st.session_state["_compare_results"] = results
 
         if st.session_state.get("_compare_results"):
             df_results = pd.DataFrame(st.session_state["_compare_results"])
             st.dataframe(df_results, use_container_width=True)
+            if "fakta_terpenuhi" in df_results.columns:
+                st.caption(
+                    "Kolom `fakta_terpenuhi`/`fakta_hilang`: cek otomatis berbasis kata kunci/angka dari jawaban "
+                    "asli di eval split — perkiraan kasar, bukan penilaian makna. ✅ ≥70% fakta ditemukan, "
+                    "⚠️ sebagian, ❌ tidak ada yang ditemukan, – tidak ada data pembanding (prompt manual)."
+                )
             st.download_button(
                 "Download hasil (CSV)",
                 df_results.to_csv(index=False).encode("utf-8"),

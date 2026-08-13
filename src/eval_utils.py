@@ -171,6 +171,79 @@ def stream_chat_response(
     thread.join()
 
 
+# Small hardcoded fallback if NLTK's stopwords corpus can't be fetched (no
+# internet) — keeps the fact-check usable offline, just less thorough.
+_STOPWORDS_FALLBACK = {
+    "yang", "dan", "atau", "dengan", "untuk", "dari", "kamu", "kami", "kita", "adalah",
+    "akan", "bisa", "ada", "tidak", "juga", "saja", "kalau", "kalo", "ini", "itu", "aku",
+    "nggak", "gak", "banget", "sama", "buat", "biar", "kayak", "the", "and", "or", "with",
+    "for", "from", "this", "that", "also", "will", "can", "not", "are", "have", "has",
+}
+_stopwords_cache: set | None = None
+
+
+def _get_stopwords() -> set:
+    """Lazy-loaded, cached union of NLTK's Indonesian + English stopword
+    lists. Downloaded on first use (needs internet once; NLTK caches the
+    corpus to disk after that, same as the sentence-transformers-style
+    on-demand downloads elsewhere in this app's dependency stack)."""
+    global _stopwords_cache
+    if _stopwords_cache is not None:
+        return _stopwords_cache
+    try:
+        import nltk
+        from nltk.corpus import stopwords
+
+        try:
+            words = set(stopwords.words("indonesian")) | set(stopwords.words("english"))
+        except LookupError:
+            nltk.download("stopwords", quiet=True)
+            words = set(stopwords.words("indonesian")) | set(stopwords.words("english"))
+        _stopwords_cache = words
+    except Exception:
+        _stopwords_cache = _STOPWORDS_FALLBACK
+    return _stopwords_cache
+
+
+def extract_key_facts(text: str, max_facts: int = 8) -> list[str]:
+    """Pull out the facts in `text` most worth checking for in a generated
+    answer: numbers first (prices/quantities are usually the most concrete,
+    verifiable thing in a product-catalog-style answer), then distinctive
+    words (longer than 3 chars, not a common stopword). Order preserved,
+    de-duplicated case-insensitively, capped at `max_facts` so a long prose
+    answer doesn't turn into an unreasonably strict checklist."""
+    numbers = re.findall(r"\d[\d.,]*\d|\d+", text)
+    words = re.findall(r"[A-Za-zÀ-ÿ]+", text)
+    stopwords_set = _get_stopwords()
+    significant = [w for w in words if len(w) > 3 and w.lower() not in stopwords_set]
+    seen, facts = set(), []
+    for f in numbers + significant:
+        key = f.lower()
+        if key not in seen:
+            seen.add(key)
+            facts.append(f)
+    return facts[:max_facts]
+
+
+def check_factual_grounding(expected: str, generated: str, max_facts: int = 8) -> dict:
+    """Rough, automatic stand-in for manually reading whether a generated
+    answer actually contains the facts from the expected (training-row)
+    answer — a keyword/number presence check, not a meaning-aware judge.
+    Returns {"score": float|None, "matched": [...], "missed": [...], "verdict": str}.
+    `score` is None (verdict "–") when `expected` has no extractable facts to
+    check at all, so callers can tell "nothing to verify" apart from "verified
+    and failed"."""
+    facts = extract_key_facts(expected, max_facts=max_facts)
+    if not facts:
+        return {"score": None, "matched": [], "missed": [], "verdict": "–"}
+    gen_lower = generated.lower()
+    matched = [f for f in facts if f.lower() in gen_lower]
+    missed = [f for f in facts if f not in matched]
+    score = len(matched) / len(facts)
+    verdict = "✅" if score >= 0.7 else ("⚠️" if score > 0 else "❌")
+    return {"score": score, "matched": matched, "missed": missed, "verdict": verdict}
+
+
 def before_after_compare(
     modality,
     model,
