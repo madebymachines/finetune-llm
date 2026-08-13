@@ -11,6 +11,7 @@ from src.constants import (
     SFT_DEFAULTS,
 )
 from src.data_utils import (
+    DEFAULT_CONCERN_KEYWORDS_TEXT,
     apply_chat_template_to_dataset,
     auto_generate_qa_rows,
     build_audio_messages_from_hf,
@@ -19,11 +20,11 @@ from src.data_utils import (
     build_vision_messages_from_upload,
     conversations_to_dataset,
     extract_text_from_document,
-    generate_recommendation_qa_rows,
-    guess_grouping_column,
+    generate_concern_qa_rows,
     load_audio_array,
     load_hf_dataset,
     media_train_eval_split,
+    parse_concern_keywords,
     parse_user_ai_examples,
     read_uploaded_table,
     resolve_conversation_columns,
@@ -334,23 +335,24 @@ with tab_data:
                         with st.expander("➕ Tambah pertanyaan rekomendasi lintas-produk (opsional)"):
                             st.caption(
                                 "Bikin pertanyaan yang jawabannya membandingkan beberapa produk sekaligus "
-                                "(mis. \"produk apa yang cocok untuk kulit kering?\") — beda dari tabel di atas "
-                                "yang tiap Q&A cuma tentang satu produk. Rule-based langsung dari kolom yang "
-                                "kamu pilih, tanpa lewat model — jadi tidak mungkin nyebut produk yang "
-                                "sebenarnya tidak ada di data."
+                                "(mis. \"Ada rekomendasi produk untuk kulit kering?\") — beda dari tabel di atas "
+                                "yang tiap Q&A cuma tentang satu produk. Tiap baris di bawah = 1 kategori "
+                                "rekomendasi: `label: kata kunci, kata kunci, ...` — produk otomatis masuk "
+                                "kategori itu kalau salah satu kata kuncinya muncul di mana saja pada data "
+                                "produk itu (nama, deskripsi, kolom apa saja), bukan cuma dari satu kolom "
+                                "kategori yang rapi. Rule-based, tanpa lewat model — jadi tidak mungkin nyebut "
+                                "produk yang sebenarnya tidak ada. Edit/tambah baris sesuai katalog kamu."
                             )
-                            guessed_col = guess_grouping_column(df)
-                            col_options = ["(pilih kolom)"] + list(df.columns)
-                            default_idx = col_options.index(guessed_col) if guessed_col in col_options else 0
-                            group_col = st.selectbox(
-                                "Kolom yang menandai kategori/kecocokan (mis. kategori, untuk kulit, target)",
-                                col_options, index=default_idx, key="reco_group_col",
+                            keyword_text = st.text_area(
+                                "Kategori rekomendasi & kata kuncinya",
+                                value=DEFAULT_CONCERN_KEYWORDS_TEXT, height=180, key="reco_keyword_text",
                             )
                             if st.button("Tambahkan ke tabel", key="add_reco_rows"):
-                                if group_col == "(pilih kolom)":
-                                    st.warning("Pilih kolom dulu.")
+                                keyword_groups = parse_concern_keywords(keyword_text)
+                                if not keyword_groups:
+                                    st.warning("Belum ada kategori valid — format tiap baris: `label: kata kunci, kata kunci`.")
                                 else:
-                                    reco_rows = generate_recommendation_qa_rows(df, group_col)
+                                    reco_rows = generate_concern_qa_rows(df, keyword_groups)
                                     if reco_rows:
                                         current = st.session_state.get(
                                             "_qa_examples_df", pd.DataFrame(columns=["user", "assistant"])
@@ -360,12 +362,13 @@ with tab_data:
                                             ignore_index=True,
                                         )
                                         st.success(
-                                            f"✅ {len(reco_rows)} pertanyaan rekomendasi ditambahkan ke tabel di bawah."
+                                            f"✅ {len(reco_rows)} pertanyaan rekomendasi ditambahkan ke tabel di bawah "
+                                            f"(dari {len(keyword_groups)} kategori yang dicek)."
                                         )
                                     else:
                                         st.warning(
-                                            "Tidak ada kelompok dengan 2+ produk di kolom itu — coba kolom lain, "
-                                            "atau datanya memang tidak ada produk yang share nilai sama."
+                                            "Tidak ada kategori dengan 2+ produk yang cocok — coba kata kunci lain, "
+                                            "atau memang belum ada produk yang share kata kunci yang sama."
                                         )
 
                 else:  # document: pdf/docx/txt/md

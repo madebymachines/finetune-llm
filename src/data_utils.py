@@ -147,77 +147,84 @@ def _looks_numeric(value) -> bool:
     return s.isdigit()
 
 
-# Column names that read naturally as a shared category/segment worth
-# grouping products by for cross-product recommendation questions (e.g. "buat
-# kulit kering, sebaiknya pakai produk apa?") — used by guess_grouping_column()
-# as a starting suggestion only; the UI still lets the user confirm/override
-# which column to use, since a name-based guess can easily pick the wrong one.
-_GROUPING_KEYWORDS = {
-    "kulit", "skin", "kategori", "category", "jenis", "type", "tipe",
-    "target", "cocok", "concern", "masalah", "problem", "untuk",
+# Starter keyword groups for the cross-product recommendation feature — each
+# label maps to keyword variants that get substring-matched (case-insensitive)
+# against a product's ENTIRE row text (name + description + every other
+# column), not one single column's literal value. Real catalogs usually
+# don't have one clean "category" column at all — concerns/benefits are
+# scattered inside marketing-copy sentences instead ("...menyatu sempurna
+# dengan kulit...", "melindungi dari sinar matahari...") — so matching by
+# keyword-in-text is what actually finds the right products, instead of
+# grouping by whatever a single column's raw (and possibly paragraph-long)
+# value happens to be. The user edits/extends this list in the UI; these are
+# just sane Indonesian skincare/makeup-catalog defaults to start from.
+DEFAULT_CONCERN_KEYWORDS = {
+    "kulit kering": ["kulit kering", "kering"],
+    "kulit berminyak": ["kulit berminyak", "berminyak", "oily"],
+    "kulit kombinasi": ["kulit kombinasi", "kombinasi"],
+    "kulit berjerawat": ["kulit berjerawat", "berjerawat", "jerawat", "acne", "breakout"],
+    "melembapkan kulit": ["melembapkan", "melembabkan", "lembap", "lembab", "hydrating", "moistur"],
+    "mencerahkan kulit": ["mencerahkan", "cerah", "brighten", "glowing"],
+    "melindungi dari paparan sinar matahari": ["spf", "uv", "sinar matahari", "sunscreen", "tabir surya"],
 }
-
-# Splits a multi-value cell like "kering, jerawat" or "kering/jerawat dan
-# kusam" into separate values, so a product tagged with more than one
-# skin type/category lands in every relevant group instead of being stuck
-# in one literal (and usually meaningless as a whole) combined string.
-_MULTI_VALUE_SPLIT_RE = re.compile(r"\s*(?:,|/|;|\bdan\b|\batau\b)\s*", re.IGNORECASE)
+DEFAULT_CONCERN_KEYWORDS_TEXT = "\n".join(f"{label}: {', '.join(kws)}" for label, kws in DEFAULT_CONCERN_KEYWORDS.items())
 
 
-def _split_multi_values(raw: str) -> list[str]:
-    parts = [p.strip() for p in _MULTI_VALUE_SPLIT_RE.split(raw) if p.strip()]
-    return parts or [raw.strip()]
+def parse_concern_keywords(text: str) -> dict[str, list[str]]:
+    """Parse the UI's editable "label: kw1, kw2, ..." textarea format (one
+    group per line) into the dict generate_concern_qa_rows() expects. Blank
+    lines and lines without a ':' are skipped; a label with no keywords
+    after it is dropped."""
+    groups: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        label, _, kws = line.partition(":")
+        label = label.strip()
+        keywords = [k.strip() for k in kws.split(",") if k.strip()]
+        if label and keywords:
+            groups[label] = keywords
+    return groups
 
 
-def guess_grouping_column(df: pd.DataFrame) -> str | None:
-    """Best-effort guess at which column represents a category/segment worth
-    grouping products by (skin type, product category, ...) — just a
-    starting suggestion for the UI to preselect; not authoritative."""
-    for c in df.columns:
-        if any(k in c.lower() for k in _GROUPING_KEYWORDS):
-            return c
-    return None
-
-
-def generate_recommendation_qa_rows(df: pd.DataFrame, group_col: str, name_col: str | None = None) -> list[dict]:
-    """Rule-based, cross-product recommendation Q&A: group rows by the
-    (possibly multi-valued, comma/slash/"dan"/"atau"-separated) values in
-    `group_col`, and for every distinct value shared by 2+ products, emit a
-    Q&A pair listing those products by name. Purely template + literal data,
-    no LLM call — can't hallucinate a product that isn't actually tagged
-    with that value. Groups of size 1 are skipped (nothing to recommend
-    "among"). `name_col` defaults to the first column, same subject
-    convention as auto_generate_qa_rows()."""
+def generate_concern_qa_rows(
+    df: pd.DataFrame, keyword_groups: dict[str, list[str]], name_col: str | None = None,
+) -> list[dict]:
+    """Rule-based, cross-product recommendation Q&A: for each `label` in
+    `keyword_groups`, a product counts as matching if ANY of its keywords
+    appears anywhere in that row's combined text (every column, lowercased,
+    space-joined) — not tied to one column having a short, clean tag value.
+    Every label with 2+ matching products gets one Q&A pair listing those
+    products' names, e.g. "Ada rekomendasi produk untuk kulit kering?" ->
+    "Beberapa produk yang cocok untuk kulit kering: A, B, C." Purely
+    template + literal product names, no LLM call — can't hallucinate a
+    product that isn't actually there. Labels matched by fewer than 2
+    products are skipped (nothing to recommend "among"). `name_col` defaults
+    to the first column, same subject convention as auto_generate_qa_rows()."""
     if name_col is None:
         name_col = df.columns[0]
-    groups: dict[str, list[str]] = {}
-    display_case: dict[str, str] = {}
+    row_blobs = []  # (name, lowercased combined text) per valid row, computed once
     for _, row in df.iterrows():
-        name, group_value = row[name_col], row[group_col]
+        name = row[name_col]
         if name != name or not str(name).strip():  # != self filters NaN
             continue
-        if group_value != group_value or not str(group_value).strip():
-            continue
-        for part in _split_multi_values(str(group_value)):
-            key = part.lower()
-            display_case.setdefault(key, part)
-            names = groups.setdefault(key, [])
-            if str(name).strip() not in names:
-                names.append(str(name).strip())
+        blob = " ".join(str(v) for v in row.values if v == v).lower()
+        row_blobs.append((str(name).strip(), blob))
 
     rows = []
-    for key, names in groups.items():
-        if len(names) < 2:
+    for label, keywords in keyword_groups.items():
+        keywords_lower = [k.lower() for k in keywords if k.strip()]
+        if not keywords_lower:
             continue
-        label = display_case[key]
-        names_list = ", ".join(names)
+        matches = [name for name, blob in row_blobs if any(kw in blob for kw in keywords_lower)]
+        matches = list(dict.fromkeys(matches))  # dedupe, keep first-seen order
+        if len(matches) < 2:
+            continue
+        names_list = ", ".join(matches)
         rows.append({
             "user": f"Ada rekomendasi produk untuk {label}?",
             "assistant": f"Beberapa produk yang cocok untuk {label}: {names_list}.",
-        })
-        rows.append({
-            "user": f"Kalau {label}, sebaiknya pakai produk apa?",
-            "assistant": f"Untuk {label}, kamu bisa coba: {names_list}.",
         })
     return rows
 
