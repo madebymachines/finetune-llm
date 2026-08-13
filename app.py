@@ -25,6 +25,7 @@ from src.data_utils import (
     load_hf_dataset,
     media_train_eval_split,
     parse_concern_keywords,
+    parse_type_map,
     parse_user_ai_examples,
     read_uploaded_table,
     resolve_conversation_columns,
@@ -347,12 +348,37 @@ with tab_data:
                                 "Kategori rekomendasi & kata kuncinya",
                                 value=DEFAULT_CONCERN_KEYWORDS_TEXT, height=180, key="reco_keyword_text",
                             )
+                            st.caption(
+                                "Opsional: kalau katalog kamu punya kolom yang membedakan tipe produk (mis. "
+                                "skincare vs makeup), pilih kolomnya supaya pertanyaannya jadi spesifik per "
+                                "tipe — \"Produk skincare apa saja yang cocok untuk kulit kering?\" — bukan "
+                                "cuma \"Ada rekomendasi produk untuk kulit kering?\" generik."
+                            )
+                            reco_col1, reco_col2 = st.columns(2)
+                            with reco_col1:
+                                type_col_choice = st.selectbox(
+                                    "Kolom penanda tipe produk",
+                                    ["(tidak ada)"] + list(df.columns), key="reco_type_col",
+                                )
+                            with reco_col2:
+                                type_map_text = st.text_input(
+                                    "Pemetaan nilai → label tipe (format: nilai=label, dipisah koma)",
+                                    value="Deco=makeup, Skincare=skincare", key="reco_type_map",
+                                    disabled=type_col_choice == "(tidak ada)",
+                                    help="Nilai mentah di kolom itu (mis. \"Deco\") → label yang enak dibaca "
+                                    "di pertanyaan (mis. \"makeup\"). Nilai yang tidak ada di pemetaan ini "
+                                    "dipakai apa adanya (huruf kecil).",
+                                )
                             if st.button("Tambahkan ke tabel", key="add_reco_rows"):
                                 keyword_groups = parse_concern_keywords(keyword_text)
                                 if not keyword_groups:
                                     st.warning("Belum ada kategori valid — format tiap baris: `label: kata kunci, kata kunci`.")
                                 else:
-                                    reco_rows = generate_concern_qa_rows(df, keyword_groups)
+                                    type_col = None if type_col_choice == "(tidak ada)" else type_col_choice
+                                    type_map = parse_type_map(type_map_text) if type_col else {}
+                                    reco_rows = generate_concern_qa_rows(
+                                        df, keyword_groups, type_col=type_col, type_map=type_map
+                                    )
                                     if reco_rows:
                                         current = st.session_state.get(
                                             "_qa_examples_df", pd.DataFrame(columns=["user", "assistant"])

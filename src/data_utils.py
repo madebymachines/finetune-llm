@@ -141,6 +141,43 @@ _ATTRIBUTE_KEYWORDS = {
     "rating", "diskon", "discount", "merek", "brand", "satuan", "unit",
 }
 
+# Maps a column name to the natural-language noun phrase that should slot
+# into "Apa {phrase} dari {subject}?" / "Berapa {phrase} {subject}?" — a
+# short-valued column earns its own question in auto_generate_qa_rows() even
+# when its name isn't in _ATTRIBUTE_KEYWORDS above (see the `len(v) <= 30`
+# check there), so without this map a column like "group_category" or
+# "product_specialty" would leak its raw snake_case name straight into the
+# question text ("Apa group_category dari X?") instead of reading naturally.
+# Unmapped columns still fall back to a readable underscore/dash-stripped
+# version of the column name rather than the raw name.
+_COLUMN_PHRASE_MAP = {
+    "harga": "harga", "price": "harga", "biaya": "harga", "cost": "harga",
+    "kategori": "kategori", "category": "kategori", "product_category": "kategori",
+    "group_category": "kelompok produk", "sub_category": "sub-kategori",
+    "jenis": "jenis", "type": "jenis", "tipe": "jenis",
+    "stok": "stok", "stock": "stok",
+    "warna": "warna", "color": "warna", "colour": "warna", "shade": "shade",
+    "ukuran": "ukuran", "size": "ukuran", "volume": "volume", "netto": "netto",
+    "berat": "berat", "weight": "berat",
+    "rating": "rating", "review": "ulasan",
+    "diskon": "diskon", "discount": "diskon",
+    "merek": "merek", "brand": "merek",
+    "satuan": "satuan", "unit": "satuan",
+    "product_specialty": "keunggulan", "specialty": "keunggulan", "keunggulan": "keunggulan",
+    "benefit": "manfaat", "manfaat": "manfaat",
+    "finish": "finish", "coverage": "coverage", "texture": "tekstur", "tekstur": "tekstur",
+    "skin_type": "jenis kulit yang cocok", "untuk_kulit": "jenis kulit yang cocok",
+    "ingredient": "kandungan", "ingredients": "kandungan", "kandungan": "kandungan",
+    "cara_pakai": "cara pakai", "usage": "cara pakai", "how_to_use": "cara pakai",
+}
+
+
+def _column_phrase(col: str) -> str:
+    key = col.lower().strip()
+    if key in _COLUMN_PHRASE_MAP:
+        return _COLUMN_PHRASE_MAP[key]
+    return key.replace("_", " ").replace("-", " ")  # readable fallback for anything unmapped
+
 
 def _looks_numeric(value) -> bool:
     s = str(value).strip().replace(".", "", 1).replace(",", "", 1)
@@ -158,6 +195,12 @@ def _looks_numeric(value) -> bool:
 # grouping by whatever a single column's raw (and possibly paragraph-long)
 # value happens to be. The user edits/extends this list in the UI; these are
 # just sane Indonesian skincare/makeup-catalog defaults to start from.
+# Skincare concerns AND makeup-side categories share this one list on
+# purpose — when type_col scoping is used (see generate_concern_qa_rows), a
+# combination that doesn't make sense (e.g. a "makeup" product matching
+# "kulit kering") naturally ends up with 0-1 matches and gets dropped by the
+# existing <2-matches skip, so there's no need to tag each line with which
+# product type it "belongs to".
 DEFAULT_CONCERN_KEYWORDS = {
     "kulit kering": ["kulit kering", "kering"],
     "kulit berminyak": ["kulit berminyak", "berminyak", "oily"],
@@ -166,6 +209,8 @@ DEFAULT_CONCERN_KEYWORDS = {
     "melembapkan kulit": ["melembapkan", "melembabkan", "lembap", "lembab", "hydrating", "moistur"],
     "mencerahkan kulit": ["mencerahkan", "cerah", "brighten", "glowing"],
     "melindungi dari paparan sinar matahari": ["spf", "uv", "sinar matahari", "sunscreen", "tabir surya"],
+    "full coverage dan tahan lama": ["full coverage", "coverage tinggi", "tahan lama", "stain lama", "long lasting", "long wear"],
+    "acara formal atau graduation": ["graduation", "wisuda", "acara formal", "pesta", "acara resmi"],
 }
 DEFAULT_CONCERN_KEYWORDS_TEXT = "\n".join(f"{label}: {', '.join(kws)}" for label, kws in DEFAULT_CONCERN_KEYWORDS.items())
 
@@ -188,8 +233,28 @@ def parse_concern_keywords(text: str) -> dict[str, list[str]]:
     return groups
 
 
+def parse_type_map(text: str) -> dict[str, str]:
+    """Parse the UI's "nilai=label, nilai=label" format (e.g. "Deco=makeup,
+    Skincare=skincare") into the dict generate_concern_qa_rows()'s type_map
+    expects. Malformed pairs (no '=', empty side) are skipped."""
+    result: dict[str, str] = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if "=" not in pair:
+            continue
+        raw, _, label = pair.partition("=")
+        raw, label = raw.strip(), label.strip()
+        if raw and label:
+            result[raw] = label
+    return result
+
+
 def generate_concern_qa_rows(
-    df: pd.DataFrame, keyword_groups: dict[str, list[str]], name_col: str | None = None,
+    df: pd.DataFrame,
+    keyword_groups: dict[str, list[str]],
+    name_col: str | None = None,
+    type_col: str | None = None,
+    type_map: dict[str, str] | None = None,
 ) -> list[dict]:
     """Rule-based, cross-product recommendation Q&A: for each `label` in
     `keyword_groups`, a product counts as matching if ANY of its keywords
@@ -201,31 +266,62 @@ def generate_concern_qa_rows(
     template + literal product names, no LLM call — can't hallucinate a
     product that isn't actually there. Labels matched by fewer than 2
     products are skipped (nothing to recommend "among"). `name_col` defaults
-    to the first column, same subject convention as auto_generate_qa_rows()."""
+    to the first column, same subject convention as auto_generate_qa_rows().
+
+    `type_col` (optional): a column that marks product type/segment (e.g. a
+    "group_category" column with values like "Deco"/"Skincare"). When given,
+    matching is scoped PER TYPE VALUE as well as per concern — a product
+    only counts for a (type, concern) combo if it's both that type AND
+    matches that concern's keywords — and the question spells the type out:
+    "Produk {type} apa saja yang cocok untuk kulit kering?". Nonsensical
+    combos (e.g. "makeup" x "kulit kering") just end up with <2 matches and
+    get skipped like any other under-populated group — no special-casing
+    needed for which concerns "belong" to which type.
+    `type_map` (optional): raw type_col value -> display label (e.g.
+    {"Deco": "makeup", "Skincare": "skincare"}); a value not in the map is
+    used as-is, lowercased."""
     if name_col is None:
         name_col = df.columns[0]
-    row_blobs = []  # (name, lowercased combined text) per valid row, computed once
+    type_map = type_map or {}
+
+    row_entries = []  # (name, lowercased combined text, raw type value or None)
     for _, row in df.iterrows():
         name = row[name_col]
         if name != name or not str(name).strip():  # != self filters NaN
             continue
         blob = " ".join(str(v) for v in row.values if v == v).lower()
-        row_blobs.append((str(name).strip(), blob))
+        type_value = None
+        if type_col is not None:
+            raw_type = row[type_col]
+            if raw_type == raw_type and str(raw_type).strip():  # not NaN
+                type_value = str(raw_type).strip()
+        row_entries.append((str(name).strip(), blob, type_value))
+
+    type_values = sorted({t for _, _, t in row_entries if t is not None}) if type_col is not None else [None]
 
     rows = []
-    for label, keywords in keyword_groups.items():
-        keywords_lower = [k.lower() for k in keywords if k.strip()]
-        if not keywords_lower:
-            continue
-        matches = [name for name, blob in row_blobs if any(kw in blob for kw in keywords_lower)]
-        matches = list(dict.fromkeys(matches))  # dedupe, keep first-seen order
-        if len(matches) < 2:
-            continue
-        names_list = ", ".join(matches)
-        rows.append({
-            "user": f"Ada rekomendasi produk untuk {label}?",
-            "assistant": f"Beberapa produk yang cocok untuk {label}: {names_list}.",
-        })
+    for type_value in type_values:
+        candidates = [(name, blob) for name, blob, t in row_entries if t == type_value]
+        for label, keywords in keyword_groups.items():
+            keywords_lower = [k.lower() for k in keywords if k.strip()]
+            if not keywords_lower:
+                continue
+            matches = [name for name, blob in candidates if any(kw in blob for kw in keywords_lower)]
+            matches = list(dict.fromkeys(matches))  # dedupe, keep first-seen order
+            if len(matches) < 2:
+                continue
+            names_list = ", ".join(matches)
+            if type_value is None:
+                rows.append({
+                    "user": f"Ada rekomendasi produk untuk {label}?",
+                    "assistant": f"Beberapa produk yang cocok untuk {label}: {names_list}.",
+                })
+            else:
+                type_label = type_map.get(type_value, type_value.lower())
+                rows.append({
+                    "user": f"Produk {type_label} apa saja yang cocok untuk {label}?",
+                    "assistant": f"Beberapa produk {type_label} yang cocok untuk {label}: {names_list}.",
+                })
     return rows
 
 
@@ -275,7 +371,8 @@ def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
         for c, v in pairs:
             if c.lower() not in _ATTRIBUTE_KEYWORDS and len(str(v)) > 30:
                 continue  # long free-text column already covered by the overview
-            question = f"Berapa {c} {subject}?" if _looks_numeric(v) else f"Apa {c} dari {subject}?"
+            phrase = _column_phrase(c)
+            question = f"Berapa {phrase} {subject}?" if _looks_numeric(v) else f"Apa {phrase} dari {subject}?"
             rows.append({"user": question, "assistant": str(v)})
     return rows
 
