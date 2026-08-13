@@ -8,22 +8,7 @@ import re
 import pandas as pd
 from datasets import Dataset
 
-from .constants import (
-    AUDIO_SAMPLING_RATE,
-    CHAT_TEMPLATE,
-    DEFAULT_KB_CHUNK_OVERLAP,
-    DEFAULT_KB_CHUNK_SIZE,
-)
-
-
-class _SafeDict(dict):
-    """dict subclass so str.format_map leaves unknown {placeholders} untouched
-    instead of raising, so template preview errors are surfaced explicitly
-    by the caller rather than silently producing garbage."""
-
-    def __missing__(self, key):
-        raise KeyError(key)
-
+from .constants import AUDIO_SAMPLING_RATE, CHAT_TEMPLATE
 
 # ---------------------------------------------------------------------------
 # Generic table loading (shared by all modalities)
@@ -103,11 +88,11 @@ _MAX_EXAMPLE_CHARS = 600
 
 def parse_user_ai_examples(text: str) -> list[dict]:
     """Best-effort extraction of 'User: "..." AI: "..."' example dialogues out
-    of a narrative persona/rule document — including the common pattern of
-    several numbered AI response variants for the same user line (data
-    augmentation by phrasing), which each become a separate training row
-    reusing that user message. This is a starting point for the user to
-    review/edit in the UI, not a guaranteed-correct parse of any document."""
+    of a narrative document — including the common pattern of several numbered
+    AI response variants for the same user line (data augmentation by
+    phrasing), which each become a separate training row reusing that user
+    message. This is a starting point for the user to review/edit in the UI,
+    not a guaranteed-correct parse of any document."""
     rows = []
     for m in _USER_AI_BLOCK.finditer(text):
         user_msg = m.group("user").strip()
@@ -121,17 +106,13 @@ def parse_user_ai_examples(text: str) -> list[dict]:
                 variants = [single]
         for assistant_msg in variants:
             if user_msg and assistant_msg and len(assistant_msg) <= _MAX_EXAMPLE_CHARS:
-                rows.append({"system": "", "user": user_msg, "assistant": assistant_msg})
+                rows.append({"user": user_msg, "assistant": assistant_msg})
     return rows
 
 
 # ---------------------------------------------------------------------------
 # Text modality: tabular data -> ShareGPT-style conversations -> "text" field
 # ---------------------------------------------------------------------------
-
-def looks_like_sharegpt(df: pd.DataFrame) -> bool:
-    return "conversations" in df.columns
-
 
 def sharegpt_df_to_dataset(df: pd.DataFrame) -> Dataset:
     from unsloth.chat_templates import standardize_data_formats
@@ -141,89 +122,80 @@ def sharegpt_df_to_dataset(df: pd.DataFrame) -> Dataset:
 
 
 def resolve_conversation_columns(df: pd.DataFrame) -> dict:
-    """Detect whether an uploaded table is already conversation-shaped, so the
-    UI can offer a one-click "Gunakan data ini" path instead of requiring
-    manual Template Builder mapping:
-    - a "conversations" column -> ShareGPT format, use directly.
-    - "user"/"assistant" columns (or "question"/"answer" aliases), optionally
-      with "system"/"rule" -> flat per-row conversation columns, map directly.
-    - otherwise -> "manual", caller falls back to Template Builder."""
-    cols_lower = {c.lower(): c for c in df.columns}
-    if "conversations" in cols_lower:
+    """A "conversations" column means the table is already final, multi-turn
+    ShareGPT format -> use directly, never flattened into a Q&A table (that
+    would silently drop turns). Anything else is "tabular" -> always
+    auto-converted into Q&A rows via auto_generate_qa_rows(), no manual
+    mapping step."""
+    if "conversations" in {c.lower() for c in df.columns}:
         return {"mode": "sharegpt"}
+    return {"mode": "tabular"}
+
+
+# Column names that read naturally as a single short attribute ("Berapa harga
+# X?", "Apa kategori X?") — used by auto_generate_qa_rows() to decide which
+# extra columns earn their own focused question beyond the general overview.
+_ATTRIBUTE_KEYWORDS = {
+    "harga", "price", "biaya", "cost", "kategori", "category", "jenis", "tipe", "type",
+    "stok", "stock", "warna", "color", "colour", "ukuran", "size", "berat", "weight",
+    "rating", "diskon", "discount", "merek", "brand", "satuan", "unit",
+}
+
+
+def _looks_numeric(value) -> bool:
+    s = str(value).strip().replace(".", "", 1).replace(",", "", 1)
+    return s.isdigit()
+
+
+def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
+    """Turn any tabular custom dataset into question/answer rows with zero
+    configuration:
+    - if the table already has recognizable Q&A columns (user/assistant or
+      question/answer, case-insensitive), use those values directly per row.
+    - otherwise (e.g. a raw product catalog with columns like nama_produk/
+      deskripsi/harga), treat the first column as the subject and emit an
+      overview pair ("Apa itu {subject}?" -> remaining columns joined
+      "kolom: nilai, ..."), PLUS one focused pair per remaining column that
+      reads as a short attribute (name matches a small keyword list like
+      harga/kategori/stok, or its value is short — long free-text columns
+      like "deskripsi" don't get a redundant near-duplicate question).
+      "Berapa {kolom} {subject}?" for numeric-looking values, otherwise
+      "Apa {kolom} dari {subject}?" — so one row can produce several rows.
+      Every answer is still the literal column value: a plain, honest join,
+      not LLM-rewritten prose, since this path makes no model call — the
+      result is meant to be reviewed/edited before training, not used verbatim.
+    Rows with an empty subject or an empty resulting answer are skipped."""
+    cols_lower = {c.lower(): c for c in df.columns}
     user_col = cols_lower.get("user") or cols_lower.get("question")
     assistant_col = cols_lower.get("assistant") or cols_lower.get("answer")
+
+    rows = []
     if user_col and assistant_col:
-        system_col = cols_lower.get("system") or cols_lower.get("rule")
-        return {"mode": "flat", "system": system_col, "user": user_col, "assistant": assistant_col}
-    return {"mode": "manual"}
+        for _, row in df.iterrows():
+            u, a = row[user_col], row[assistant_col]
+            if pd.isna(u) or pd.isna(a) or not str(u).strip() or not str(a).strip():
+                continue
+            rows.append({"user": str(u), "assistant": str(a)})
+        return rows
 
-
-def build_conversations_from_template(
-    df: pd.DataFrame,
-    system_template: str,
-    user_template: str,
-    assistant_template: str,
-) -> list[list[dict]]:
-    """Turn each row of a tabular custom dataset (product catalog, instruction
-    /rule + Q&A examples, etc.) into a ShareGPT-style conversation by
-    filling {column_name} placeholders from the row's values."""
-    conversations = []
+    if len(df.columns) < 2:
+        return rows
+    subject_col, other_cols = df.columns[0], df.columns[1:]
     for _, row in df.iterrows():
-        values = _SafeDict({k: ("" if pd.isna(v) else v) for k, v in row.items()})
-        convo = []
-        if system_template.strip():
-            convo.append({"role": "system", "content": system_template.format_map(values)})
-        convo.append({"role": "user", "content": user_template.format_map(values)})
-        convo.append({"role": "assistant", "content": assistant_template.format_map(values)})
-        conversations.append(convo)
-    return conversations
-
-
-# ---------------------------------------------------------------------------
-# Knowledge Base (RAG): chunking raw text/tabular data for embedding-based
-# retrieval, so a catalog or document can be Q&A'd without finetuning and
-# without dumping the whole thing into every prompt (see src/retrieval.py).
-# ---------------------------------------------------------------------------
-
-def row_to_text(row: pd.Series) -> str:
-    """Zero-config 'col: value' rendering of one table row, so a CSV/Excel
-    catalog can become knowledge-base chunks without the user writing a
-    template. Blank/NaN cells are skipped."""
-    parts = [f"{col}: {val}" for col, val in row.items() if not pd.isna(val) and str(val).strip()]
-    return ", ".join(parts)
-
-
-def chunk_text(
-    text: str,
-    chunk_size: int = DEFAULT_KB_CHUNK_SIZE,
-    overlap: int = DEFAULT_KB_CHUNK_OVERLAP,
-) -> list[str]:
-    """Paragraph-aware chunking for document knowledge-base sources: greedily
-    packs paragraphs up to chunk_size, hard-splitting any single paragraph
-    that's longer than chunk_size on its own. `overlap` chars are repeated
-    at each boundary so a fact split across chunks isn't lost to a hard cut."""
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-    step = chunk_size - overlap if overlap < chunk_size else chunk_size
-    chunks: list[str] = []
-    current = ""
-    for para in paragraphs:
-        candidate = f"{current}\n\n{para}" if current else para
-        if len(candidate) <= chunk_size:
-            current = candidate
+        subject = row[subject_col]
+        if pd.isna(subject) or not str(subject).strip():
             continue
-        if current:
-            chunks.append(current)
-            tail = current[-overlap:] if overlap else ""
-            current = f"{tail}\n\n{para}" if tail else para
-        else:
-            current = para
-        while len(current) > chunk_size:
-            chunks.append(current[:chunk_size])
-            current = current[step:]
-    if current:
-        chunks.append(current)
-    return chunks
+        pairs = [(c, row[c]) for c in other_cols if not pd.isna(row[c]) and str(row[c]).strip()]
+        if not pairs:
+            continue
+        overview = ", ".join(f"{c}: {v}" for c, v in pairs)
+        rows.append({"user": f"Apa itu {subject}?", "assistant": overview})
+        for c, v in pairs:
+            if c.lower() not in _ATTRIBUTE_KEYWORDS and len(str(v)) > 30:
+                continue  # long free-text column already covered by the overview
+            question = f"Berapa {c} {subject}?" if _looks_numeric(v) else f"Apa {c} dari {subject}?"
+            rows.append({"user": question, "assistant": str(v)})
+    return rows
 
 
 def conversations_to_dataset(conversations: list[list[dict]]) -> Dataset:

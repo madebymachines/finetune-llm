@@ -66,11 +66,3 @@ SFT_DEFAULTS = {
 }
 
 AUDIO_SAMPLING_RATE = 16000
-
-# Multilingual (incl. Indonesian) embedding model for the Knowledge Base / RAG
-# retrieval feature. Runs on CPU so it never competes with the 4-bit LLM for VRAM.
-DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
-DEFAULT_KB_TOP_K = 5
-DEFAULT_KB_MAX_CHARS = 2000
-DEFAULT_KB_CHUNK_SIZE = 800
-DEFAULT_KB_CHUNK_OVERLAP = 100

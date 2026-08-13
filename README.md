@@ -32,27 +32,15 @@ streamlit run app.py
      `FastVisionModel`), default LoRA (r/alpha), dan target modules yang dipakai.
    - Pilih/masukkan model Gemma-4, load model, lalu apply LoRA adapters.
 2. **📊 Data** — tergantung modalitas:
-   - **Text** — dipecah jadi dua sub-tab yang terpisah karena tujuannya beda:
-     - **🎭 Persona & Guardrail (Training)**: data yang benar-benar di-**finetune** ke model
-       (gaya bicara & batasan aman/tidak aman). Dataset HF Hub (default
-       `mlabonne/FineTome-100k`), atau upload dokumen persona/rule (PDF/DOCX/TXT) — kalau
-       dokumennya berisi contoh dialog berpola `User: "..." AI: "..."` (termasuk beberapa
-       variasi jawaban bernomor untuk satu pesan user), contoh itu **otomatis ditarik**
-       jadi baris percakapan training di tabel yang bisa diedit langsung di UI (tambah/hapus
-       baris, atau isi manual kalau tidak ada dokumen sama sekali) sebelum dipakai — jadi
-       tidak perlu bikin file CSV terpisah kalau contohnya sudah ada di dalam dokumen. Upload
-       file percakapan siap pakai (CSV/Excel/JSON/JSONL, kolom `conversations` atau
-       `user`+`assistant`+`system`) tetap tersedia sebagai jalur alternatif untuk yang sudah
-       punya spreadsheet.
-     - **📦 Knowledge Base (Katalog / Chat with Document)**: data yang **tidak** di-training —
-       upload katalog produk (CSV/Excel/JSON) dan/atau dokumen apapun (PDF/DOCX/TXT/MD),
-       bisa banyak sekaligus. Setiap sumber otomatis dipecah jadi potongan-potongan kecil
-       (baris tabel, atau paragraf dokumen), lalu diindeks dengan embedding multilingual
-       (`intfloat/multilingual-e5-small`, termasuk Bahasa Indonesia). Saat chat di tab
-       Test/Evaluate, potongan yang paling relevan dengan pertanyaan diambil otomatis
-       (cosine similarity, top-k) dan disisipkan ke context — jadi jawabannya selalu
-       berdasarkan data terbaru tanpa training ulang, dan tetap akurat walau pertanyaannya
-       diparafrase.
+   - **Text**: satu alur — upload **data custom apa pun** (format bebas: CSV/Excel/JSON/JSONL
+     data percakapan siap pakai, tabel data mentah seperti katalog produk yang perlu dipetakan
+     jadi tanya-jawab, atau dokumen PDF/DOCX/TXT/MD) dan diubah jadi dataset percakapan
+     `user`/`assistant` (format ShareGPT — persis seperti `FineTome-100k` di notebook Unsloth,
+     **tanpa** role `system`). Auto-detect: kolom `conversations` atau `user`+`assistant`
+     langsung dipakai; tabel dengan kolom lain (mis. `nama_produk`/`deskripsi`/`harga`) perlu
+     dipetakan manual lewat Template Builder (`{nama_kolom}` placeholder); dokumen dengan pola
+     `User: "..." AI: "..."` di-auto-extract ke tabel yang bisa diedit langsung di UI sebelum
+     dipakai. Atau pakai dataset HF Hub (default `mlabonne/FineTome-100k`).
    - **Vision**: dataset HF Hub dengan kolom gambar+teks (default `unsloth/LaTeX_OCR`), atau
      upload banyak gambar + CSV/Excel berisi nama file, pertanyaan (opsional), dan jawaban.
    - **Audio**: dataset HF Hub dengan kolom audio+transkrip (default
@@ -68,27 +56,21 @@ streamlit run app.py
    - Vision: upload satu gambar + pertanyaan, lihat jawaban model.
    - Audio: upload satu file audio + pertanyaan (mis. transkripsi), lihat jawaban model.
    - Toggle adapter (base vs hasil finetune), parameter generation sesuai rekomendasi Gemma-4
-     (`temperature=1.0, top_p=0.95, top_k=64`).
-   - Kalau Knowledge Base sudah dibangun di tab Data, ada toggle "Sertakan Knowledge Base" —
-     tiap pertanyaan otomatis diambilkan potongan paling relevan (expander "🔍 Konteks
-     Knowledge Base yang dipakai" menampilkan potongan mana saja yang disisipkan).
-5. **📈 Evaluate**
-   - **Eval loss / perplexity**: `trainer.evaluate()` pada eval split, dicatat per-label
-     (mis. jalankan sebelum & sesudah training untuk dibandingkan).
-   - **Before vs After**: bandingkan output base model vs hasil finetune pada prompt/gambar/audio
-     yang sama (adapter di-nonaktifkan sementara via `model.disable_adapter()`, tanpa perlu load
-     model dua kali), hasil bisa diunduh sebagai CSV.
+     (`temperature=1.0, top_p=0.95, top_k=64`). Field "System prompt" murni opsional untuk
+     eksperimen manual saat testing — bukan bagian dari data training.
+5. **📈 Evaluate** — **Before vs After**: bandingkan output base model vs hasil finetune pada
+   prompt/gambar/audio yang sama (adapter di-nonaktifkan sementara via `model.disable_adapter()`,
+   tanpa perlu load model dua kali), hasil bisa diunduh sebagai CSV.
 
 ## Struktur
 
 ```
 app.py                   # UI Streamlit (semua tab)
-src/constants.py          # daftar model, chat template, default per modalitas (LoRA & SFT), default Knowledge Base
-src/gpu_utils.py           # cek CUDA & memory stats
-src/data_utils.py          # load dataset HF / upload custom / template builder / builder Vision & Audio / chunking KB
-src/retrieval.py           # embedding (sentence-transformers) + cosine similarity retrieval untuk Knowledge Base
+src/constants.py          # daftar model, chat template, default per modalitas (LoRA & SFT)
+src/gpu_utils.py           # cek CUDA & memory stats, pembersih cache CUDA
+src/data_utils.py          # load dataset HF / upload custom / template builder / builder Vision & Audio
 src/train_utils.py         # load model (modality-aware), LoRA, SFTTrainer, callback progress
-src/eval_utils.py          # eval loss/perplexity, streaming chat, before-vs-after (modality-aware)
+src/eval_utils.py          # streaming chat, before-vs-after compare (modality-aware)
 ```
 
 ## Catatan desain
@@ -96,15 +78,13 @@ src/eval_utils.py          # eval loss/perplexity, streaming chat, before-vs-aft
 - Tab Export (save/merge/GGUF/push-to-hub) sengaja tidak ada di v1 — training dijalankan
   langsung di tool ini, tapi kalau butuh export model, notebook Unsloth aslinya sudah
   punya cell untuk itu; bisa ditambahkan kembali ke tool ini kalau memang dibutuhkan.
-- Dokumen naratif persona/rule (PDF/DOCX/TXT) di-parse otomatis (regex best-effort, lihat
+- Data training **selalu** murni percakapan `user`/`assistant` — tidak ada role `system` yang
+  ikut di-training, persis mengikuti format `FineTome-100k` di notebook referensi. Semua yang
+  perlu diketahui/dilakukan model (persona, batasan, fakta produk) harus direpresentasikan
+  sebagai baris `user`→`assistant` yang eksplisit di data training, bukan lewat system prompt
+  atau retrieval saat inferensi — tool ini tidak punya fitur RAG/knowledge-base terpisah.
+- Dokumen naratif (PDF/DOCX/TXT) di-parse otomatis (regex best-effort, lihat
   `parse_user_ai_examples` di `src/data_utils.py`) mencari pola `User: "..." AI: "..."` —
   hasilnya masuk ke tabel yang bisa diedit di UI, bukan langsung jadi dataset final, karena
   parsing seperti ini tidak dijamin cocok untuk semua format dokumen. Kalau dokumenmu pakai
-  format lain yang tidak kena pola ini, isi tabelnya manual atau upload spreadsheet siap
-  pakai. Untuk dokumen naratif sebagai referensi/katalog (bukan contoh dialog training),
-  upload saja langsung ke Knowledge Base — di situ dokumen memang diproses apa adanya
-  (di-chunk, bukan di-parse jadi Q&A).
-- Knowledge Base pakai retrieval brute-force (numpy cosine similarity, exact — bukan
-  approximate), bukan FAISS/Chroma: cukup cepat & akurat untuk skala katalog produk biasa
-  (ratusan–ribuan baris/potongan), tanpa dependency vector-DB tambahan. Model embedding-nya
-  jalan di CPU supaya tidak berebut VRAM dengan LLM 4-bit yang sedang di-load.
+  format lain yang tidak kena pola ini, isi tabelnya manual atau upload spreadsheet siap pakai.

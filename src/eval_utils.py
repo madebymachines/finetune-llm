@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import threading
 
 from .constants import DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P
@@ -79,6 +80,52 @@ def generate_response(
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+_QA_PAIR_RE = re.compile(r'Q\d*\s*:\s*(.+?)\s*\n\s*A\d*\s*:\s*(.+?)(?=\n\s*Q\d*\s*:|\Z)', re.DOTALL | re.IGNORECASE)
+# The last matched answer absorbs any trailing text the model writes after the
+# final Q/A block (the regex has no marker to stop at otherwise) — cap length
+# so a stray trailing ramble can't turn into a multi-thousand-character row.
+# This is the same failure mode (and same fix) as parse_user_ai_examples()'s
+# _MAX_EXAMPLE_CHARS, which caused a real training OOM earlier in this project.
+_MAX_LLM_QA_CHARS = 500
+
+
+def generate_qa_pairs_llm(model, processor, df, questions_per_row: int = 2, max_new_tokens: int = 300) -> list[dict]:
+    """Alternative to data_utils.auto_generate_qa_rows() that asks the
+    already-loaded model to write `questions_per_row` naturally-varied Q&A
+    pairs per row, strictly grounded in that row's own column values, instead
+    of the fixed rule-based templates. Costs one generate() call per row, so
+    it's an opt-in the caller should gate behind a model-loaded check and a
+    progress spinner — this function has no Streamlit/UI awareness itself.
+
+    use_adapter defaults to True (via generate_response) rather than False:
+    at Data-tab time a LoRA adapter may not even be attached yet (Setup's
+    "Apply LoRA" step is independent of Data tab), and model.disable_adapter()
+    raises on a plain (non-PEFT) model — True works unconditionally, and an
+    untrained adapter (zero-initialized B matrix) behaves identically to the
+    base model anyway."""
+    rows = []
+    for _, row in df.iterrows():
+        facts = "\n".join(f"- {c}: {v}" for c, v in row.items() if v == v and str(v).strip())  # v == v filters NaN
+        if not facts:
+            continue
+        prompt = (
+            f"Berikut data satu produk/item:\n{facts}\n\n"
+            f"Buat {questions_per_row} pasang pertanyaan dan jawaban dalam Bahasa Indonesia tentang data ini. "
+            "Pertanyaannya harus bervariasi gayanya (jangan semua diawali 'Apa itu'). "
+            "Jawabannya HARUS hanya berdasarkan data di atas, jangan menambahkan informasi yang tidak ada. "
+            "Format WAJIB persis seperti ini, satu pasang per blok:\n"
+            "Q1: <pertanyaan>\nA1: <jawaban>\nQ2: <pertanyaan>\nA2: <jawaban>"
+        )
+        text = generate_response(
+            "Text", model, processor, text=prompt, max_new_tokens=max_new_tokens, temperature=0.7,
+        )
+        for q, a in _QA_PAIR_RE.findall(text):
+            q, a = q.strip(), a.strip()
+            if q and a and len(q) <= _MAX_LLM_QA_CHARS and len(a) <= _MAX_LLM_QA_CHARS:
+                rows.append({"user": q, "assistant": a})
+    return rows
+
+
 def stream_chat_response(
     modality,
     model,
@@ -135,19 +182,16 @@ def before_after_compare(
     top_p: float = DEFAULT_TOP_P,
     top_k: int = DEFAULT_TOP_K,
 ):
-    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray,
-    "system_prompt"?: str}. Each item may override `system_prompt` (e.g. with
-    per-question Knowledge Base retrieval context); falls back to the shared
-    `system_prompt` arg otherwise. For each item, generate with the LoRA
-    adapter disabled (base model behaviour) and enabled (finetuned), reusing
-    the same loaded weights."""
+    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray}.
+    For each item, generate with the LoRA adapter disabled (base model
+    behaviour) and enabled (finetuned), reusing the same loaded weights."""
     results = []
     for item in items:
         kwargs = dict(
             text=item["text"],
             image=item.get("image"),
             audio=item.get("audio"),
-            system_prompt=item.get("system_prompt", system_prompt),
+            system_prompt=system_prompt,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
