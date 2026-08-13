@@ -213,17 +213,40 @@ def generate_qa_pairs_llm(
     "Apply LoRA" step is independent of Data tab), and model.disable_adapter()
     raises on a plain (non-PEFT) model — True works unconditionally, and an
     untrained adapter (zero-initialized B matrix) behaves identically to the
-    base model anyway."""
+    base model anyway.
+
+    Every pair from a row becomes its own INDEPENDENT training row once
+    flattened — there's no shared context between Q1/A1 and Q2/A2 of the same
+    product, let alone across different products. So the prompt explicitly
+    requires (a) one overview/identity question per row even when
+    questions_per_row is small (otherwise "vary the style" alone can make the
+    model skip introducing the product entirely), and (b) every question to
+    name the product/item outright instead of a bare pronoun like "ini" —
+    that pronoun would have no antecedent once the pair stands alone, so a
+    real user's differently-phrased "ini" at inference time can't be
+    resolved either."""
+    if len(df.columns) == 0:
+        return []
+    subject_col = df.columns[0]
     prompts = []
     for _, row in df.iterrows():
+        subject = row[subject_col]
+        if subject != subject or not str(subject).strip():  # `!= self` filters NaN
+            continue
         facts = "\n".join(f"- {c}: {v}" for c, v in row.items() if v == v and str(v).strip())  # v == v filters NaN
         if not facts:
             continue
         prompts.append(
-            f"Berikut data satu produk/item:\n{facts}\n\n"
-            f"Buat {questions_per_row} pasang pertanyaan dan jawaban dalam Bahasa Indonesia tentang data ini. "
-            "Pertanyaannya harus bervariasi gayanya (jangan semua diawali 'Apa itu'). "
-            "Jawabannya HARUS hanya berdasarkan data di atas, jangan menambahkan informasi yang tidak ada. "
+            f'Berikut data satu produk/item bernama "{subject}":\n{facts}\n\n'
+            f"Buat {questions_per_row} pasang pertanyaan dan jawaban dalam Bahasa Indonesia tentang data ini.\n"
+            "ATURAN WAJIB:\n"
+            f'1. Pasangan pertama (Q1/A1) HARUS pertanyaan pengenalan/ringkasan produk (boleh variasikan '
+            f'kalimatnya, mis. "Apa itu {subject}?" atau "Ceritakan tentang {subject}").\n'
+            f'2. SETIAP pertanyaan wajib menyebut nama "{subject}" secara eksplisit — JANGAN pakai kata ganti '
+            'seperti "ini"/"produk ini" tanpa menyebut namanya, karena tiap pasangan dipakai terpisah tanpa '
+            "konteks pasangan lain.\n"
+            "3. Kalau ada pasangan setelah yang pertama, variasikan gayanya (jangan semua diawali 'Apa itu').\n"
+            "4. Jawabannya HARUS hanya berdasarkan data di atas, jangan menambahkan informasi yang tidak ada.\n"
             "Format WAJIB persis seperti ini, satu pasang per blok:\n"
             "Q1: <pertanyaan>\nA1: <jawaban>\nQ2: <pertanyaan>\nA2: <jawaban>"
         )

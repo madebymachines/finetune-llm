@@ -19,6 +19,8 @@ from src.data_utils import (
     build_vision_messages_from_upload,
     conversations_to_dataset,
     extract_text_from_document,
+    generate_recommendation_qa_rows,
+    guess_grouping_column,
     load_audio_array,
     load_hf_dataset,
     media_train_eval_split,
@@ -328,6 +330,43 @@ with tab_data:
                                 )
                             else:
                                 st.warning("Tidak ada baris valid yang bisa diubah jadi tanya-jawab dari tabel ini.")
+
+                        with st.expander("➕ Tambah pertanyaan rekomendasi lintas-produk (opsional)"):
+                            st.caption(
+                                "Bikin pertanyaan yang jawabannya membandingkan beberapa produk sekaligus "
+                                "(mis. \"produk apa yang cocok untuk kulit kering?\") — beda dari tabel di atas "
+                                "yang tiap Q&A cuma tentang satu produk. Rule-based langsung dari kolom yang "
+                                "kamu pilih, tanpa lewat model — jadi tidak mungkin nyebut produk yang "
+                                "sebenarnya tidak ada di data."
+                            )
+                            guessed_col = guess_grouping_column(df)
+                            col_options = ["(pilih kolom)"] + list(df.columns)
+                            default_idx = col_options.index(guessed_col) if guessed_col in col_options else 0
+                            group_col = st.selectbox(
+                                "Kolom yang menandai kategori/kecocokan (mis. kategori, untuk kulit, target)",
+                                col_options, index=default_idx, key="reco_group_col",
+                            )
+                            if st.button("Tambahkan ke tabel", key="add_reco_rows"):
+                                if group_col == "(pilih kolom)":
+                                    st.warning("Pilih kolom dulu.")
+                                else:
+                                    reco_rows = generate_recommendation_qa_rows(df, group_col)
+                                    if reco_rows:
+                                        current = st.session_state.get(
+                                            "_qa_examples_df", pd.DataFrame(columns=["user", "assistant"])
+                                        )
+                                        st.session_state["_qa_examples_df"] = pd.concat(
+                                            [current, pd.DataFrame(reco_rows, columns=["user", "assistant"])],
+                                            ignore_index=True,
+                                        )
+                                        st.success(
+                                            f"✅ {len(reco_rows)} pertanyaan rekomendasi ditambahkan ke tabel di bawah."
+                                        )
+                                    else:
+                                        st.warning(
+                                            "Tidak ada kelompok dengan 2+ produk di kolom itu — coba kolom lain, "
+                                            "atau datanya memang tidak ada produk yang share nilai sama."
+                                        )
 
                 else:  # document: pdf/docx/txt/md
                     show_qa_table = True

@@ -147,6 +147,81 @@ def _looks_numeric(value) -> bool:
     return s.isdigit()
 
 
+# Column names that read naturally as a shared category/segment worth
+# grouping products by for cross-product recommendation questions (e.g. "buat
+# kulit kering, sebaiknya pakai produk apa?") — used by guess_grouping_column()
+# as a starting suggestion only; the UI still lets the user confirm/override
+# which column to use, since a name-based guess can easily pick the wrong one.
+_GROUPING_KEYWORDS = {
+    "kulit", "skin", "kategori", "category", "jenis", "type", "tipe",
+    "target", "cocok", "concern", "masalah", "problem", "untuk",
+}
+
+# Splits a multi-value cell like "kering, jerawat" or "kering/jerawat dan
+# kusam" into separate values, so a product tagged with more than one
+# skin type/category lands in every relevant group instead of being stuck
+# in one literal (and usually meaningless as a whole) combined string.
+_MULTI_VALUE_SPLIT_RE = re.compile(r"\s*(?:,|/|;|\bdan\b|\batau\b)\s*", re.IGNORECASE)
+
+
+def _split_multi_values(raw: str) -> list[str]:
+    parts = [p.strip() for p in _MULTI_VALUE_SPLIT_RE.split(raw) if p.strip()]
+    return parts or [raw.strip()]
+
+
+def guess_grouping_column(df: pd.DataFrame) -> str | None:
+    """Best-effort guess at which column represents a category/segment worth
+    grouping products by (skin type, product category, ...) — just a
+    starting suggestion for the UI to preselect; not authoritative."""
+    for c in df.columns:
+        if any(k in c.lower() for k in _GROUPING_KEYWORDS):
+            return c
+    return None
+
+
+def generate_recommendation_qa_rows(df: pd.DataFrame, group_col: str, name_col: str | None = None) -> list[dict]:
+    """Rule-based, cross-product recommendation Q&A: group rows by the
+    (possibly multi-valued, comma/slash/"dan"/"atau"-separated) values in
+    `group_col`, and for every distinct value shared by 2+ products, emit a
+    Q&A pair listing those products by name. Purely template + literal data,
+    no LLM call — can't hallucinate a product that isn't actually tagged
+    with that value. Groups of size 1 are skipped (nothing to recommend
+    "among"). `name_col` defaults to the first column, same subject
+    convention as auto_generate_qa_rows()."""
+    if name_col is None:
+        name_col = df.columns[0]
+    groups: dict[str, list[str]] = {}
+    display_case: dict[str, str] = {}
+    for _, row in df.iterrows():
+        name, group_value = row[name_col], row[group_col]
+        if name != name or not str(name).strip():  # != self filters NaN
+            continue
+        if group_value != group_value or not str(group_value).strip():
+            continue
+        for part in _split_multi_values(str(group_value)):
+            key = part.lower()
+            display_case.setdefault(key, part)
+            names = groups.setdefault(key, [])
+            if str(name).strip() not in names:
+                names.append(str(name).strip())
+
+    rows = []
+    for key, names in groups.items():
+        if len(names) < 2:
+            continue
+        label = display_case[key]
+        names_list = ", ".join(names)
+        rows.append({
+            "user": f"Ada rekomendasi produk untuk {label}?",
+            "assistant": f"Beberapa produk yang cocok untuk {label}: {names_list}.",
+        })
+        rows.append({
+            "user": f"Kalau {label}, sebaiknya pakai produk apa?",
+            "assistant": f"Untuk {label}, kamu bisa coba: {names_list}.",
+        })
+    return rows
+
+
 def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
     """Turn any tabular custom dataset into question/answer rows with zero
     configuration:
