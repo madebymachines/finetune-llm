@@ -124,11 +124,15 @@ def sharegpt_df_to_dataset(df: pd.DataFrame) -> Dataset:
 def resolve_conversation_columns(df: pd.DataFrame) -> dict:
     """A "conversations" column means the table is already final, multi-turn
     ShareGPT format -> use directly, never flattened into a Q&A table (that
-    would silently drop turns). Anything else is "tabular" -> always
-    auto-converted into Q&A rows via auto_generate_qa_rows(), no manual
-    mapping step."""
-    if "conversations" in {c.lower() for c in df.columns}:
+    would silently drop turns). A table that already has clean user/assistant
+    (or question/answer) columns is "qa_ready" -> also use directly, no need
+    to run it through auto_generate_qa_rows()/Gemma just to get the exact
+    same values back out. Anything else is "tabular" -> needs auto-conversion."""
+    cols_lower = {c.lower() for c in df.columns}
+    if "conversations" in cols_lower:
         return {"mode": "sharegpt"}
+    if ("user" in cols_lower and "assistant" in cols_lower) or ("question" in cols_lower and "answer" in cols_lower):
+        return {"mode": "qa_ready"}
     return {"mode": "tabular"}
 
 

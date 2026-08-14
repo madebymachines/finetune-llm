@@ -207,6 +207,19 @@ with tab_setup:
         if st.session_state.lora_applied:
             st.success("LoRA sudah aktif pada model ini.")
 
+    st.subheader("3. System prompt untuk Test & Evaluate")
+    st.caption(
+        "Opsional — cuma dipakai saat chat/generate di tab Test & Evaluate, TIDAK ikut masuk ke data "
+        "training (training-nya murni user/assistant, tanpa system prompt). Diisi di sini sekali supaya "
+        "otomatis kepakai di semua tab lain tanpa perlu ketik ulang tiap pindah tab — masih bisa diedit "
+        "lagi langsung di tab Test/Evaluate kalau mau coba persona lain sementara."
+    )
+    setup_system_prompt = st.text_area(
+        "System prompt", value=st.session_state.get("last_system_prompt", ""),
+        height=150, key="setup_system_prompt",
+    )
+    st.session_state["last_system_prompt"] = setup_system_prompt
+
 # ---------------------------------------------------------------------------
 # Data tab
 # ---------------------------------------------------------------------------
@@ -270,6 +283,19 @@ with tab_data:
                         if st.button("Gunakan data ini", type="primary", key="use_sharegpt"):
                             st.session_state["_raw_dataset"] = sharegpt_df_to_dataset(df)
                             st.success("Dataset training siap.")
+
+                    elif resolved["mode"] == "qa_ready":
+                        st.success(
+                            "✅ Kolom `user`/`assistant` (atau `question`/`answer`) terdeteksi — datamu sudah "
+                            "dalam format tanya-jawab, tidak perlu dibangun ulang. Cek & edit di tabel di "
+                            "bawah sebelum dipakai."
+                        )
+                        show_qa_table = True
+                        if st.session_state.get("_qa_source_id") != source_id:
+                            rows = auto_generate_qa_rows(df)  # passthrough: reads the existing columns as-is
+                            st.session_state["_qa_examples_df"] = pd.DataFrame(rows, columns=["user", "assistant"])
+                            st.session_state["_qa_source_id"] = source_id
+
                     else:
                         show_qa_table = True
                         conv_method = st.radio(
@@ -759,6 +785,7 @@ with tab_test:
                 help="Cuma dipakai saat chat di sini — tidak ikut masuk ke data training (training-nya murni "
                 "user/assistant, tanpa system prompt).",
             )
+            st.session_state["last_system_prompt"] = system_prompt
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
@@ -797,6 +824,7 @@ with tab_test:
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
                 height=100,
             )
+            st.session_state["last_system_prompt"] = system_prompt
             image_file = st.file_uploader("Upload gambar", type=["png", "jpg", "jpeg", "webp"], key="test_image")
             question = st.text_input("Pertanyaan", value="Apa isi gambar ini?")
             if image_file is not None:
@@ -819,6 +847,7 @@ with tab_test:
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
                 height=100,
             )
+            st.session_state["last_system_prompt"] = system_prompt
             audio_file = st.file_uploader("Upload audio", type=["wav", "mp3", "flac", "m4a"], key="test_audio")
             question = st.text_input("Pertanyaan", value="Please transcribe this audio.")
             if audio_file is not None:
@@ -859,6 +888,7 @@ with tab_eval:
                 height=100,
                 help="Cuma dipakai saat generate di sini — tidak ikut masuk ke data training.",
             )
+            st.session_state["last_system_prompt"] = system_prompt_eval
 
             raw_eval = st.session_state.get("_raw_eval_dataset")
             if raw_eval is not None and len(raw_eval) > 0:
@@ -882,20 +912,12 @@ with tab_eval:
                     "template & siapkan train/eval set', supaya bisa pakai cek fakta otomatis di sini."
                 )
 
-            prompts_text = st.text_area("Atau tulis prompt sendiri (satu per baris)", height=150, placeholder="Apa itu produk X?\n...")
-            if st.button("Bandingkan Base vs Finetuned", type="primary"):
-                prompts = [p.strip() for p in prompts_text.splitlines() if p.strip()]
-                if not prompts:
-                    st.warning("Isi minimal satu prompt.")
-                else:
-                    items = [{"text": p} for p in prompts]
-                    st.session_state["_eval_expected_map"] = {}  # no ground-truth answer to check against
-
         elif modality == "Vision":
             system_prompt_eval = st.text_area(
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
                 height=100,
             )
+            st.session_state["last_system_prompt"] = system_prompt_eval
             question = st.text_input("Pertanyaan untuk tiap gambar", value="Apa isi gambar ini?")
             image_files = st.file_uploader("Upload gambar (bisa lebih dari satu)", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True, key="eval_images")
             if st.button("Bandingkan Base vs Finetuned", type="primary"):
@@ -911,6 +933,7 @@ with tab_eval:
                 "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
                 height=100,
             )
+            st.session_state["last_system_prompt"] = system_prompt_eval
             question = st.text_input("Pertanyaan untuk tiap audio", value="Please transcribe this audio.")
             audio_files = st.file_uploader("Upload audio (bisa lebih dari satu)", type=["wav", "mp3", "flac", "m4a"], accept_multiple_files=True, key="eval_audios")
             if st.button("Bandingkan Base vs Finetuned", type="primary"):
