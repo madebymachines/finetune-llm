@@ -11,7 +11,6 @@ from src.constants import (
     SFT_DEFAULTS,
 )
 from src.data_utils import (
-    DEFAULT_CONCERN_KEYWORDS_TEXT,
     apply_chat_template_to_dataset,
     auto_generate_qa_rows,
     build_audio_messages_from_hf,
@@ -20,19 +19,16 @@ from src.data_utils import (
     build_vision_messages_from_upload,
     conversations_to_dataset,
     extract_text_from_document,
-    generate_concern_qa_rows,
     load_audio_array,
     load_hf_dataset,
     media_train_eval_split,
-    parse_concern_keywords,
-    parse_type_map,
     parse_user_ai_examples,
     read_uploaded_table,
     resolve_conversation_columns,
     sharegpt_df_to_dataset,
     train_eval_split,
 )
-from src.eval_utils import before_after_compare, check_factual_grounding, generate_qa_pairs_llm, stream_chat_response
+from src.eval_utils import augment_qa_paraphrases, before_after_compare, check_factual_grounding, stream_chat_response
 from src.gpu_utils import check_cuda, clear_gpu_cache, memory_snapshot
 from src.train_utils import (
     StreamlitTrainerCallback,
@@ -298,31 +294,41 @@ with tab_data:
 
                     else:
                         show_qa_table = True
+                        st.caption(
+                            "Otomatis: tiap produk jadi beberapa pertanyaan (ringkasan + atribut), PLUS "
+                            "pertanyaan rekomendasi lintas-produk terdeteksi otomatis dari kolom kategori "
+                            "apa pun yang ada di data kamu (tidak perlu diketik manual, dan bekerja sama "
+                            "untuk katalog jenis apa saja)."
+                        )
                         conv_method = st.radio(
                             "Metode konversi ke tanya-jawab",
-                            ["🔧 Otomatis (rule-based, instan)", "🤖 Pakai model Gemma (lebih variatif)"],
+                            ["🔧 Otomatis (rule-based, instan)", "🤖 Otomatis + variasi kalimat dari Gemma"],
                             horizontal=True, key="qa_conv_method",
                             help="Rule-based: instan, gratis, jawaban selalu persis dari kolom aslinya. "
-                            "Gemma: pertanyaan lebih variatif gayanya, tapi butuh model sudah dimuat & "
-                            "makan waktu GPU sebanding jumlah baris (diproses per batch, tapi tetap linear "
-                            "terhadap jumlah baris).",
+                            "Gemma: sama seperti rule-based, PLUS tiap pertanyaan (termasuk pertanyaan "
+                            "rekomendasi) dibuatkan beberapa variasi kalimat tambahan — jawabannya tetap "
+                            "persis sama, cuma cara nanyanya lebih beragam, supaya model lebih gampang "
+                            "'ketemu' jawaban yang benar walau user nanya dengan kalimat yang beda dari "
+                            "training. Butuh model sudah dimuat & makan waktu GPU sebanding jumlah baris "
+                            "(diproses per batch).",
                         )
                         use_llm = conv_method.startswith("🤖")
                         if use_llm and st.session_state.model is None:
                             st.warning("Model belum dimuat di tab Setup — pakai metode rule-based dulu untuk sekarang.")
                             use_llm = False
-                        n_per_row = 2
+                        n_paraphrases = 2
                         qa_batch_size = 4
                         if use_llm:
                             qa_col1, qa_col2 = st.columns(2)
                             with qa_col1:
-                                n_per_row = st.number_input(
-                                    "Jumlah pertanyaan per baris", min_value=1, max_value=5, value=2, key="qa_llm_n"
+                                n_paraphrases = st.number_input(
+                                    "Jumlah variasi kalimat per pertanyaan", min_value=1, max_value=5, value=2,
+                                    key="qa_llm_n",
                                 )
                             with qa_col2:
                                 qa_batch_size = st.slider(
                                     "Ukuran batch", 1, 16, 4, 1, key="qa_llm_batch_size",
-                                    help="Berapa baris data diproses sekaligus dalam satu pemanggilan "
+                                    help="Berapa pertanyaan diproses sekaligus dalam satu pemanggilan "
                                     "model.generate() — makin besar, makin sedikit pemanggilan jadi makin "
                                     "cepat, tapi makin banyak VRAM GPU yang dipakai bersamaan. Turunkan "
                                     "kalau kena OOM.",
@@ -338,90 +344,28 @@ with tab_data:
                                 "kalau tabelnya kebetulan ke-edit tidak sengaja.",
                             )
                         if not already_generated or regenerate:
+                            base_rows = auto_generate_qa_rows(df)
                             if use_llm:
                                 with st.spinner(
-                                    f"Menghasilkan Q&A dengan Gemma untuk {len(df)} baris (diproses per "
-                                    "batch) — masih bisa beberapa menit untuk data yang besar..."
+                                    f"Menambahkan variasi kalimat dengan Gemma untuk {len(base_rows)} "
+                                    "pertanyaan (diproses per batch) — bisa beberapa menit untuk data yang besar..."
                                 ):
-                                    rows = generate_qa_pairs_llm(
-                                        st.session_state.model, st.session_state.processor, df,
-                                        questions_per_row=int(n_per_row), batch_size=int(qa_batch_size),
+                                    rows = augment_qa_paraphrases(
+                                        st.session_state.model, st.session_state.processor, base_rows,
+                                        paraphrases_per_row=int(n_paraphrases), batch_size=int(qa_batch_size),
                                     )
                             else:
-                                rows = auto_generate_qa_rows(df)
+                                rows = base_rows
                             st.session_state["_qa_examples_df"] = pd.DataFrame(rows, columns=["user", "assistant"])
                             st.session_state["_qa_source_id"] = source_id
                             if rows:
                                 st.success(
-                                    f"✅ {len(rows)} pasangan tanya-jawab dibuat otomatis dari data ini — "
-                                    "cek & edit di tabel di bawah sebelum dipakai."
+                                    f"✅ {len(rows)} pasangan tanya-jawab dibuat otomatis dari data ini "
+                                    f"(termasuk pertanyaan rekomendasi lintas-produk) — cek & edit di tabel "
+                                    "di bawah sebelum dipakai."
                                 )
                             else:
                                 st.warning("Tidak ada baris valid yang bisa diubah jadi tanya-jawab dari tabel ini.")
-
-                        with st.expander("➕ Tambah pertanyaan rekomendasi lintas-produk (opsional)"):
-                            st.caption(
-                                "Bikin pertanyaan yang jawabannya membandingkan beberapa produk sekaligus "
-                                "(mis. \"Ada rekomendasi produk untuk kulit kering?\") — beda dari tabel di atas "
-                                "yang tiap Q&A cuma tentang satu produk. Tiap baris di bawah = 1 kategori "
-                                "rekomendasi: `label: kata kunci, kata kunci, ...` — produk otomatis masuk "
-                                "kategori itu kalau salah satu kata kuncinya muncul di mana saja pada data "
-                                "produk itu (nama, deskripsi, kolom apa saja), bukan cuma dari satu kolom "
-                                "kategori yang rapi. Rule-based, tanpa lewat model — jadi tidak mungkin nyebut "
-                                "produk yang sebenarnya tidak ada. Edit/tambah baris sesuai katalog kamu."
-                            )
-                            keyword_text = st.text_area(
-                                "Kategori rekomendasi & kata kuncinya",
-                                value=DEFAULT_CONCERN_KEYWORDS_TEXT, height=180, key="reco_keyword_text",
-                            )
-                            st.caption(
-                                "Opsional: kalau katalog kamu punya kolom yang membedakan tipe produk (mis. "
-                                "skincare vs makeup), pilih kolomnya supaya pertanyaannya jadi spesifik per "
-                                "tipe — \"Produk skincare apa saja yang cocok untuk kulit kering?\" — bukan "
-                                "cuma \"Ada rekomendasi produk untuk kulit kering?\" generik."
-                            )
-                            reco_col1, reco_col2 = st.columns(2)
-                            with reco_col1:
-                                type_col_choice = st.selectbox(
-                                    "Kolom penanda tipe produk",
-                                    ["(tidak ada)"] + list(df.columns), key="reco_type_col",
-                                )
-                            with reco_col2:
-                                type_map_text = st.text_input(
-                                    "Pemetaan nilai → label tipe (format: nilai=label, dipisah koma)",
-                                    value="Deco=makeup, Skincare=skincare", key="reco_type_map",
-                                    disabled=type_col_choice == "(tidak ada)",
-                                    help="Nilai mentah di kolom itu (mis. \"Deco\") → label yang enak dibaca "
-                                    "di pertanyaan (mis. \"makeup\"). Nilai yang tidak ada di pemetaan ini "
-                                    "dipakai apa adanya (huruf kecil).",
-                                )
-                            if st.button("Tambahkan ke tabel", key="add_reco_rows"):
-                                keyword_groups = parse_concern_keywords(keyword_text)
-                                if not keyword_groups:
-                                    st.warning("Belum ada kategori valid — format tiap baris: `label: kata kunci, kata kunci`.")
-                                else:
-                                    type_col = None if type_col_choice == "(tidak ada)" else type_col_choice
-                                    type_map = parse_type_map(type_map_text) if type_col else {}
-                                    reco_rows = generate_concern_qa_rows(
-                                        df, keyword_groups, type_col=type_col, type_map=type_map
-                                    )
-                                    if reco_rows:
-                                        current = st.session_state.get(
-                                            "_qa_examples_df", pd.DataFrame(columns=["user", "assistant"])
-                                        )
-                                        st.session_state["_qa_examples_df"] = pd.concat(
-                                            [current, pd.DataFrame(reco_rows, columns=["user", "assistant"])],
-                                            ignore_index=True,
-                                        )
-                                        st.success(
-                                            f"✅ {len(reco_rows)} pertanyaan rekomendasi ditambahkan ke tabel di bawah "
-                                            f"(dari {len(keyword_groups)} kategori yang dicek)."
-                                        )
-                                    else:
-                                        st.warning(
-                                            "Tidak ada kategori dengan 2+ produk yang cocok — coba kata kunci lain, "
-                                            "atau memang belum ada produk yang share kata kunci yang sama."
-                                        )
 
                 else:  # document: pdf/docx/txt/md
                     show_qa_table = True

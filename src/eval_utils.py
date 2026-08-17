@@ -183,85 +183,75 @@ def generate_batch(
     return [tokenizer.decode(seq, skip_special_tokens=True) for seq in new_tokens]
 
 
-_QA_PAIR_RE = re.compile(r'Q\d*\s*:\s*(.+?)\s*\n\s*A\d*\s*:\s*(.+?)(?=\n\s*Q\d*\s*:|\Z)', re.DOTALL | re.IGNORECASE)
-# The last matched answer absorbs any trailing text the model writes after the
-# final Q/A block (the regex has no marker to stop at otherwise) — cap length
-# so a stray trailing ramble can't turn into a multi-thousand-character row.
-# This is the same failure mode (and same fix) as parse_user_ai_examples()'s
-# _MAX_EXAMPLE_CHARS, which caused a real training OOM earlier in this project.
+# Caps how long a single LLM-generated question paraphrase can be before it's
+# dropped — same failure mode (and same fix) as parse_user_ai_examples()'s
+# _MAX_EXAMPLE_CHARS, which caused a real training OOM earlier in this project:
+# a model that doesn't stop cleanly can otherwise turn one "variant" into a
+# multi-thousand-character ramble.
 _MAX_LLM_QA_CHARS = 500
 
 
-def generate_qa_pairs_llm(
-    model, processor, df, questions_per_row: int = 2, max_new_tokens: int = 300, batch_size: int = 4,
+_PARAPHRASE_LINE_RE = re.compile(r'^\s*Q\s*:\s*(.+)$', re.MULTILINE | re.IGNORECASE)
+
+
+def augment_qa_paraphrases(
+    model, processor, base_rows: list[dict],
+    paraphrases_per_row: int = 2, max_new_tokens: int = 200, batch_size: int = 4,
 ) -> list[dict]:
-    """Alternative to data_utils.auto_generate_qa_rows() that asks the
-    already-loaded model to write `questions_per_row` naturally-varied Q&A
-    pairs per row, strictly grounded in that row's own column values, instead
-    of the fixed rule-based templates. It's an opt-in the caller should gate
-    behind a model-loaded check and a progress spinner — this function has no
-    Streamlit/UI awareness itself.
+    """Given already-grounded {"user", "assistant"} rows (e.g. from
+    data_utils.auto_generate_qa_rows()), ask the already-loaded model to
+    write `paraphrases_per_row` additional natural rephrasings of each
+    QUESTION — the ANSWER is always copied verbatim from the base row, never
+    regenerated, so this step can't introduce a new hallucinated fact, only
+    teach the model more ways of asking for a fact it already has grounded.
 
-    Rows are processed `batch_size` at a time via generate_batch() — one
-    model.generate() call per chunk of rows instead of one per row, same
-    technique as before_after_compare's Evaluate-tab speedup. Still linear in
-    row count (a big catalog is still a big catalog), just far fewer, better
-    -utilized GPU calls to get there.
+    This targets a specific, observed failure mode: a finetuned model
+    reliably recalls a fact when asked close to the exact trained phrasing,
+    but for a differently-worded (especially open-ended "give me a
+    recommendation" style) question, it falls back to free-generating
+    plausible-sounding but fabricated content instead of finding the correct
+    grounded answer already in its training data. More phrasing variety per
+    fact directly targets that gap. Returns `base_rows` plus the new
+    paraphrase rows (bases are never dropped or duplicated by generation).
 
-    use_adapter defaults to True (via generate_batch) rather than False:
-    at Data-tab time a LoRA adapter may not even be attached yet (Setup's
-    "Apply LoRA" step is independent of Data tab), and model.disable_adapter()
-    raises on a plain (non-PEFT) model — True works unconditionally, and an
-    untrained adapter (zero-initialized B matrix) behaves identically to the
-    base model anyway.
+    Rows are processed `batch_size` at a time via generate_batch() — same
+    batching technique as before_after_compare's Evaluate-tab speedup.
 
-    Every pair from a row becomes its own INDEPENDENT training row once
-    flattened — there's no shared context between Q1/A1 and Q2/A2 of the same
-    product, let alone across different products. So the prompt explicitly
-    requires (a) one overview/identity question per row even when
-    questions_per_row is small (otherwise "vary the style" alone can make the
-    model skip introducing the product entirely), and (b) every question to
-    name the product/item outright instead of a bare pronoun like "ini" —
-    that pronoun would have no antecedent once the pair stands alone, so a
-    real user's differently-phrased "ini" at inference time can't be
-    resolved either."""
-    if len(df.columns) == 0:
-        return []
-    subject_col = df.columns[0]
-    prompts = []
-    for _, row in df.iterrows():
-        subject = row[subject_col]
-        if subject != subject or not str(subject).strip():  # `!= self` filters NaN
-            continue
-        facts = "\n".join(f"- {c}: {v}" for c, v in row.items() if v == v and str(v).strip())  # v == v filters NaN
-        if not facts:
-            continue
-        prompts.append(
-            f'Berikut data satu produk/item bernama "{subject}":\n{facts}\n\n'
-            f"Buat {questions_per_row} pasang pertanyaan dan jawaban dalam Bahasa Indonesia tentang data ini.\n"
-            "ATURAN WAJIB:\n"
-            f'1. Pasangan pertama (Q1/A1) HARUS pertanyaan pengenalan/ringkasan produk (boleh variasikan '
-            f'kalimatnya, mis. "Apa itu {subject}?" atau "Ceritakan tentang {subject}").\n'
-            f'2. SETIAP pertanyaan wajib menyebut nama "{subject}" secara eksplisit — JANGAN pakai kata ganti '
-            'seperti "ini"/"produk ini" tanpa menyebut namanya, karena tiap pasangan dipakai terpisah tanpa '
-            "konteks pasangan lain.\n"
-            "3. Kalau ada pasangan setelah yang pertama, variasikan gayanya (jangan semua diawali 'Apa itu').\n"
-            "4. Jawabannya HARUS hanya berdasarkan data di atas, jangan menambahkan informasi yang tidak ada.\n"
-            "Format WAJIB persis seperti ini, satu pasang per blok:\n"
-            "Q1: <pertanyaan>\nA1: <jawaban>\nQ2: <pertanyaan>\nA2: <jawaban>"
-        )
+    use_adapter defaults to True (via generate_batch) rather than False: at
+    Data-tab time a LoRA adapter may not even be attached yet, and
+    model.disable_adapter() raises on a plain (non-PEFT) model."""
+    if paraphrases_per_row <= 0 or not base_rows:
+        return list(base_rows)
 
-    rows = []
+    prompts = [
+        f'Pertanyaan asli: "{row["user"]}"\n\n'
+        f"Tulis {paraphrases_per_row} cara lain menanyakan HAL YANG PERSIS SAMA, dengan gaya kalimat "
+        "berbeda-beda (mis. lebih santai, lebih formal, atau lebih singkat). JANGAN ubah maksud "
+        "pertanyaannya sama sekali — ini murni variasi kalimat, bukan pertanyaan baru, dan jangan "
+        "sertakan jawabannya. Format WAJIB persis seperti ini, satu variasi per baris, tanpa nomor:\n"
+        "Q: <variasi 1>\nQ: <variasi 2>"
+        for row in base_rows
+    ]
+
+    new_rows = []
     step = max(1, batch_size)
     for start in range(0, len(prompts), step):
         chunk = prompts[start:start + step]
+        chunk_rows = base_rows[start:start + step]
         outputs = generate_batch("Text", model, processor, chunk, max_new_tokens=max_new_tokens, temperature=0.7)
-        for text in outputs:
-            for q, a in _QA_PAIR_RE.findall(text):
-                q, a = q.strip(), a.strip()
-                if q and a and len(q) <= _MAX_LLM_QA_CHARS and len(a) <= _MAX_LLM_QA_CHARS:
-                    rows.append({"user": q, "assistant": a})
-    return rows
+        for row, text in zip(chunk_rows, outputs):
+            seen = {row["user"].strip().lower()}
+            added = 0
+            for variant in _PARAPHRASE_LINE_RE.findall(text):
+                if added >= paraphrases_per_row:
+                    break
+                variant = variant.strip().strip('"').strip()
+                if not variant or len(variant) > _MAX_LLM_QA_CHARS or variant.lower() in seen:
+                    continue
+                seen.add(variant.lower())
+                new_rows.append({"user": variant, "assistant": row["assistant"]})
+                added += 1
+    return list(base_rows) + new_rows
 
 
 def stream_chat_response(

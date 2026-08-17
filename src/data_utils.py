@@ -188,143 +188,103 @@ def _looks_numeric(value) -> bool:
     return s.isdigit()
 
 
-# Starter keyword groups for the cross-product recommendation feature — each
-# label maps to keyword variants that get substring-matched (case-insensitive)
-# against a product's ENTIRE row text (name + description + every other
-# column), not one single column's literal value. Real catalogs usually
-# don't have one clean "category" column at all — concerns/benefits are
-# scattered inside marketing-copy sentences instead ("...menyatu sempurna
-# dengan kulit...", "melindungi dari sinar matahari...") — so matching by
-# keyword-in-text is what actually finds the right products, instead of
-# grouping by whatever a single column's raw (and possibly paragraph-long)
-# value happens to be. The user edits/extends this list in the UI; these are
-# just sane Indonesian skincare/makeup-catalog defaults to start from.
-# Skincare concerns AND makeup-side categories share this one list on
-# purpose — when type_col scoping is used (see generate_concern_qa_rows), a
-# combination that doesn't make sense (e.g. a "makeup" product matching
-# "kulit kering") naturally ends up with 0-1 matches and gets dropped by the
-# existing <2-matches skip, so there's no need to tag each line with which
-# product type it "belongs to".
-DEFAULT_CONCERN_KEYWORDS = {
-    "kulit kering": ["kulit kering", "kering"],
-    "kulit berminyak": ["kulit berminyak", "berminyak", "oily"],
-    "kulit kombinasi": ["kulit kombinasi", "kombinasi"],
-    "kulit berjerawat": ["kulit berjerawat", "berjerawat", "jerawat", "acne", "breakout"],
-    "melembapkan kulit": ["melembapkan", "melembabkan", "lembap", "lembab", "hydrating", "moistur"],
-    "mencerahkan kulit": ["mencerahkan", "cerah", "brighten", "glowing"],
-    "melindungi dari paparan sinar matahari": ["spf", "uv", "sinar matahari", "sunscreen", "tabir surya"],
-    "full coverage dan tahan lama": ["full coverage", "coverage tinggi", "tahan lama", "stain lama", "long lasting", "long wear"],
-    "acara formal atau graduation": ["graduation", "wisuda", "acara formal", "pesta", "acara resmi"],
-}
-DEFAULT_CONCERN_KEYWORDS_TEXT = "\n".join(f"{label}: {', '.join(kws)}" for label, kws in DEFAULT_CONCERN_KEYWORDS.items())
+# Values that read as booleans/flags rather than meaningful category labels
+# (e.g. a "prioritize_product" Yes/No column) — excluded from grouping-column
+# detection below, since "produk apa saja yang termasuk kategori Ya?" isn't a
+# useful recommendation question.
+_BOOLEAN_LIKE_VALUES = {"true", "false", "yes", "no", "ya", "tidak", "1", "0", "1.0", "0.0"}
+
+# Multiple natural phrasings for the auto-generated cross-product
+# recommendation question — deliberately more than one template (unlike the
+# single "Apa itu {subject}?" overview phrasing) because this is the exact
+# question shape that was observed to fail hardest at inference time: an
+# open-ended "recommend me a product for X" phrased differently than the
+# training template caused the finetuned model to fabricate plausible-
+# sounding but nonexistent product names instead of returning the real,
+# grounded list. More surface variety on this one template gives the
+# finetuning signal more chances to generalize to a real user's phrasing.
+_RECOMMENDATION_QUESTION_TEMPLATES = [
+    "Produk apa saja yang termasuk kategori {value}?",
+    "Ada rekomendasi produk untuk kategori {value}?",
+]
 
 
-def parse_concern_keywords(text: str) -> dict[str, list[str]]:
-    """Parse the UI's editable "label: kw1, kw2, ..." textarea format (one
-    group per line) into the dict generate_concern_qa_rows() expects. Blank
-    lines and lines without a ':' are skipped; a label with no keywords
-    after it is dropped."""
-    groups: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
+def _detect_grouping_columns(
+    df: pd.DataFrame, name_col, min_group_size: int = 2, max_group_size: int = 15,
+) -> list[str]:
+    """Find columns that look like clean categorical fields worth grouping
+    rows by — purely from the data's shape, no hardcoded domain/column-name
+    knowledge, so this works the same on a skincare catalog, an electronics
+    catalog, or anything else with a name column plus some attribute columns.
+
+    A column qualifies if: it isn't the subject/name column; its non-empty
+    values are short (not free-text paragraphs); it isn't purely numeric
+    (price/rating columns aren't "categories") or boolean-like; it has more
+    than one distinct value but not close to one distinct value per row
+    (that's an identifier, like a SKU, not a category); and at least one
+    value is shared by somewhere between `min_group_size` and
+    `max_group_size` rows (too few = nothing to recommend "among"; too many
+    = too broad to be a specific, useful recommendation grouping)."""
+    candidates = []
+    n_rows = len(df)
+    for c in df.columns:
+        if c == name_col:
             continue
-        label, _, kws = line.partition(":")
-        label = label.strip()
-        keywords = [k.strip() for k in kws.split(",") if k.strip()]
-        if label and keywords:
-            groups[label] = keywords
-    return groups
-
-
-def parse_type_map(text: str) -> dict[str, str]:
-    """Parse the UI's "nilai=label, nilai=label" format (e.g. "Deco=makeup,
-    Skincare=skincare") into the dict generate_concern_qa_rows()'s type_map
-    expects. Malformed pairs (no '=', empty side) are skipped."""
-    result: dict[str, str] = {}
-    for pair in text.split(","):
-        pair = pair.strip()
-        if "=" not in pair:
+        values = df[c].dropna().astype(str).str.strip()
+        values = values[values != ""]
+        if values.empty:
             continue
-        raw, _, label = pair.partition("=")
-        raw, label = raw.strip(), label.strip()
-        if raw and label:
-            result[raw] = label
-    return result
+        distinct = values.unique()
+        if all(_looks_numeric(v) for v in distinct):
+            continue  # e.g. price, rating — not a meaningful "category"
+        if all(v.lower() in _BOOLEAN_LIKE_VALUES for v in distinct):
+            continue
+        if len(distinct) < 2 or len(distinct) > max(10, n_rows * 0.4):
+            continue
+        if any(len(v) > 40 for v in distinct):
+            continue
+        counts = values.value_counts()
+        if not ((counts >= min_group_size) & (counts <= max_group_size)).any():
+            continue
+        candidates.append(c)
+    return candidates
 
 
-def generate_concern_qa_rows(
-    df: pd.DataFrame,
-    keyword_groups: dict[str, list[str]],
-    name_col: str | None = None,
-    type_col: str | None = None,
-    type_map: dict[str, str] | None = None,
+def generate_recommendation_qa_rows(
+    df: pd.DataFrame, name_col: str | None = None, min_group_size: int = 2, max_group_size: int = 15,
 ) -> list[dict]:
-    """Rule-based, cross-product recommendation Q&A: for each `label` in
-    `keyword_groups`, a product counts as matching if ANY of its keywords
-    appears anywhere in that row's combined text (every column, lowercased,
-    space-joined) — not tied to one column having a short, clean tag value.
-    Every label with 2+ matching products gets one Q&A pair listing those
-    products' names, e.g. "Ada rekomendasi produk untuk kulit kering?" ->
-    "Beberapa produk yang cocok untuk kulit kering: A, B, C." Purely
-    template + literal product names, no LLM call — can't hallucinate a
-    product that isn't actually there. Labels matched by fewer than 2
-    products are skipped (nothing to recommend "among"). `name_col` defaults
-    to the first column, same subject convention as auto_generate_qa_rows().
-
-    `type_col` (optional): a column that marks product type/segment (e.g. a
-    "group_category" column with values like "Deco"/"Skincare"). When given,
-    matching is scoped PER TYPE VALUE as well as per concern — a product
-    only counts for a (type, concern) combo if it's both that type AND
-    matches that concern's keywords — and the question spells the type out:
-    "Produk {type} apa saja yang cocok untuk kulit kering?". Nonsensical
-    combos (e.g. "makeup" x "kulit kering") just end up with <2 matches and
-    get skipped like any other under-populated group — no special-casing
-    needed for which concerns "belong" to which type.
-    `type_map` (optional): raw type_col value -> display label (e.g.
-    {"Deco": "makeup", "Skincare": "skincare"}); a value not in the map is
-    used as-is, lowercased."""
+    """Rule-based, cross-product recommendation Q&A — fully automatic, zero
+    configuration: auto-detects which columns look like clean category
+    fields (see _detect_grouping_columns), then for every distinct value
+    shared by min_group_size..max_group_size rows, emits Q&A pairs (using
+    several phrasings, see _RECOMMENDATION_QUESTION_TEMPLATES) listing the
+    matching product names verbatim. Purely template + literal data, no LLM
+    call — can't hallucinate a product that isn't actually there. Reusable
+    as-is on any tabular custom data with a name column plus category-like
+    columns; nothing here is specific to any one catalog/domain."""
     if name_col is None:
         name_col = df.columns[0]
-    type_map = type_map or {}
-
-    row_entries = []  # (name, lowercased combined text, raw type value or None)
-    for _, row in df.iterrows():
-        name = row[name_col]
-        if name != name or not str(name).strip():  # != self filters NaN
-            continue
-        blob = " ".join(str(v) for v in row.values if v == v).lower()
-        type_value = None
-        if type_col is not None:
-            raw_type = row[type_col]
-            if raw_type == raw_type and str(raw_type).strip():  # not NaN
-                type_value = str(raw_type).strip()
-        row_entries.append((str(name).strip(), blob, type_value))
-
-    type_values = sorted({t for _, _, t in row_entries if t is not None}) if type_col is not None else [None]
-
     rows = []
-    for type_value in type_values:
-        candidates = [(name, blob) for name, blob, t in row_entries if t == type_value]
-        for label, keywords in keyword_groups.items():
-            keywords_lower = [k.lower() for k in keywords if k.strip()]
-            if not keywords_lower:
+    for col in _detect_grouping_columns(df, name_col, min_group_size, max_group_size):
+        groups: dict[str, list[str]] = {}
+        for _, row in df.iterrows():
+            name, value = row[name_col], row[col]
+            if name != name or not str(name).strip():  # != self filters NaN
                 continue
-            matches = [name for name, blob in candidates if any(kw in blob for kw in keywords_lower)]
-            matches = list(dict.fromkeys(matches))  # dedupe, keep first-seen order
-            if len(matches) < 2:
+            if value != value or not str(value).strip():
                 continue
-            names_list = ", ".join(matches)
-            if type_value is None:
+            names = groups.setdefault(str(value).strip(), [])
+            nm = str(name).strip()
+            if nm not in names:
+                names.append(nm)
+        for value, names in groups.items():
+            if not (min_group_size <= len(names) <= max_group_size):
+                continue
+            names_list = ", ".join(names)
+            for template in _RECOMMENDATION_QUESTION_TEMPLATES:
                 rows.append({
-                    "user": f"Ada rekomendasi produk untuk {label}?",
-                    "assistant": f"Beberapa produk yang cocok untuk {label}: {names_list}.",
-                })
-            else:
-                type_label = type_map.get(type_value, type_value.lower())
-                rows.append({
-                    "user": f"Produk {type_label} apa saja yang cocok untuk {label}?",
-                    "assistant": f"Beberapa produk {type_label} yang cocok untuk {label}: {names_list}.",
+                    "user": template.format(value=value),
+                    "assistant": f"Produk yang termasuk kategori {value}: {names_list}.",
                 })
     return rows
 
@@ -340,7 +300,9 @@ def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
       "kolom: nilai, ..."), PLUS one focused pair per remaining column that
       reads as a short attribute (name matches a small keyword list like
       harga/kategori/stok, or its value is short — long free-text columns
-      like "deskripsi" don't get a redundant near-duplicate question).
+      like "deskripsi" don't get a redundant near-duplicate question), PLUS
+      dynamically-detected cross-product recommendation Q&A (see
+      generate_recommendation_qa_rows) appended at the end.
       "Berapa {kolom} {subject}?" for numeric-looking values, otherwise
       "Apa {kolom} dari {subject}?" — so one row can produce several rows.
       Every answer is still the literal column value: a plain, honest join,
@@ -378,6 +340,8 @@ def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
             phrase = _column_phrase(c)
             question = f"Berapa {phrase} {subject}?" if _looks_numeric(v) else f"Apa {phrase} dari {subject}?"
             rows.append({"user": question, "assistant": str(v)})
+
+    rows.extend(generate_recommendation_qa_rows(df, subject_col))
     return rows
 
 
