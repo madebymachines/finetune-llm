@@ -211,8 +211,12 @@ def augment_qa_paraphrases(
     recommendation" style) question, it falls back to free-generating
     plausible-sounding but fabricated content instead of finding the correct
     grounded answer already in its training data. More phrasing variety per
-    fact directly targets that gap. Returns `base_rows` plus the new
-    paraphrase rows (bases are never dropped or duplicated by generation).
+    fact directly targets that gap. Returns each base row immediately
+    followed by its own paraphrase variants (not all bases first, then all
+    variants appended at the end) — so scanning the returned table top to
+    bottom in the UI shows each fact's variants right next to it instead of
+    the table opening with what looks like a purely rule-based table until
+    scrolled far down.
 
     Rows are processed `batch_size` at a time via generate_batch() — same
     batching technique as before_after_compare's Evaluate-tab speedup.
@@ -233,13 +237,13 @@ def augment_qa_paraphrases(
         for row in base_rows
     ]
 
-    new_rows = []
+    variants_by_index = [[] for _ in base_rows]
     step = max(1, batch_size)
     for start in range(0, len(prompts), step):
         chunk = prompts[start:start + step]
         chunk_rows = base_rows[start:start + step]
         outputs = generate_batch("Text", model, processor, chunk, max_new_tokens=max_new_tokens, temperature=0.7)
-        for row, text in zip(chunk_rows, outputs):
+        for offset, (row, text) in enumerate(zip(chunk_rows, outputs)):
             seen = {row["user"].strip().lower()}
             added = 0
             for variant in _PARAPHRASE_LINE_RE.findall(text):
@@ -249,9 +253,14 @@ def augment_qa_paraphrases(
                 if not variant or len(variant) > _MAX_LLM_QA_CHARS or variant.lower() in seen:
                     continue
                 seen.add(variant.lower())
-                new_rows.append({"user": variant, "assistant": row["assistant"]})
+                variants_by_index[start + offset].append({"user": variant, "assistant": row["assistant"]})
                 added += 1
-    return list(base_rows) + new_rows
+
+    result = []
+    for base, variants in zip(base_rows, variants_by_index):
+        result.append(base)
+        result.extend(variants)
+    return result
 
 
 def stream_chat_response(
