@@ -136,14 +136,53 @@ def resolve_conversation_columns(df: pd.DataFrame) -> dict:
     return {"mode": "tabular"}
 
 
-# Column names that read naturally as a single short attribute ("Berapa harga
-# X?", "Apa kategori X?") — used by auto_generate_qa_rows() to decide which
-# extra columns earn their own focused question beyond the general overview.
+# Column names that earn their own focused question beyond the general
+# overview in auto_generate_qa_rows() — normally that's gated on the value
+# being short (<=30 chars, see the check below), but a column listed here
+# gets its own question EVEN IF its value is long, because it's still a
+# distinct, specific fact worth its own Q&A row rather than something
+# already folded into the overview (e.g. a product's "keunggulan"/benefits
+# list or "kandungan"/ingredients list is long text, but it's a genuinely
+# different question from "what is this product").
 _ATTRIBUTE_KEYWORDS = {
     "harga", "price", "biaya", "cost", "kategori", "category", "jenis", "tipe", "type",
     "stok", "stock", "warna", "color", "colour", "ukuran", "size", "berat", "weight",
     "rating", "diskon", "discount", "merek", "brand", "satuan", "unit",
+    "product_specialty", "specialty", "keunggulan", "benefit", "manfaat",
+    "ingredient", "ingredients", "kandungan", "cara_pakai", "usage", "how_to_use",
+    "shades", "shade", "activity_related",
 }
+
+# Columns that are internal/technical bookkeeping fields — links, ids,
+# images, priority flags — rather than facts a real user would ever ask
+# about. Excluded from both the overview text and from getting their own
+# question, so a raw image/product URL never ends up inside a training
+# answer. Matched by keyword substring (not exact catalog-specific column
+# names), so this holds for any tabular custom data, not just one catalog.
+_EXCLUDED_COLUMN_KEYWORDS = {"url", "link", "image", "sku", "_id", "prioritize", "internal", "slug", "uuid"}
+
+# Columns whose value already reads as a complete "what is this" paragraph
+# — when one of these is present, it's used AS-IS as the overview answer
+# instead of joining every remaining column into a "col: value, col: value"
+# list (which used to balloon into a near-unreadable dump, including raw
+# URLs, once a catalog had more than a handful of columns).
+_DESCRIPTION_COLUMN_KEYWORDS = {"description", "deskripsi", "summary", "ringkasan"}
+
+# Columns that read better with "Bagaimana {phrase} {subject}?" ("Bagaimana
+# cara pakai X?") than the default "Apa {phrase} dari {subject}?".
+_HOW_TO_COLUMN_KEYWORDS = {"cara_pakai", "usage", "how_to_use"}
+
+
+def _is_excluded_column(col: str) -> bool:
+    key = col.lower()
+    return any(k in key for k in _EXCLUDED_COLUMN_KEYWORDS)
+
+
+def _find_description_column(cols) -> str | None:
+    for c in cols:
+        if c.lower() in _DESCRIPTION_COLUMN_KEYWORDS:
+            return c
+    return None
 
 # Maps a column name to the natural-language noun phrase that should slot
 # into "Apa {phrase} dari {subject}?" / "Berapa {phrase} {subject}?" — a
@@ -173,6 +212,7 @@ _COLUMN_PHRASE_MAP = {
     "skin_type": "jenis kulit yang cocok", "untuk_kulit": "jenis kulit yang cocok",
     "ingredient": "kandungan", "ingredients": "kandungan", "kandungan": "kandungan",
     "cara_pakai": "cara pakai", "usage": "cara pakai", "how_to_use": "cara pakai",
+    "shades": "shade", "activity_related": "aktivitas yang cocok",
 }
 
 
@@ -324,7 +364,9 @@ def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
 
     if len(df.columns) < 2:
         return rows
-    subject_col, other_cols = df.columns[0], df.columns[1:]
+    subject_col = df.columns[0]
+    other_cols = [c for c in df.columns[1:] if not _is_excluded_column(c)]
+    desc_col = _find_description_column(other_cols)
     for _, row in df.iterrows():
         subject = row[subject_col]
         if pd.isna(subject) or not str(subject).strip():
@@ -332,13 +374,23 @@ def auto_generate_qa_rows(df: pd.DataFrame) -> list[dict]:
         pairs = [(c, row[c]) for c in other_cols if not pd.isna(row[c]) and str(row[c]).strip()]
         if not pairs:
             continue
-        overview = ", ".join(f"{c}: {v}" for c, v in pairs)
+        if desc_col and not pd.isna(row[desc_col]) and str(row[desc_col]).strip():
+            overview = str(row[desc_col]).strip()
+        else:
+            overview = ", ".join(f"{c}: {v}" for c, v in pairs)
         rows.append({"user": f"Apa itu {subject}?", "assistant": overview})
         for c, v in pairs:
+            if c == desc_col:
+                continue  # already used verbatim as the overview answer above
             if c.lower() not in _ATTRIBUTE_KEYWORDS and len(str(v)) > 30:
-                continue  # long free-text column already covered by the overview
+                continue  # long free-text column, not explicitly listed, already covered by the overview
             phrase = _column_phrase(c)
-            question = f"Berapa {phrase} {subject}?" if _looks_numeric(v) else f"Apa {phrase} dari {subject}?"
+            if c.lower() in _HOW_TO_COLUMN_KEYWORDS:
+                question = f"Bagaimana {phrase} {subject}?"
+            elif _looks_numeric(v):
+                question = f"Berapa {phrase} {subject}?"
+            else:
+                question = f"Apa {phrase} dari {subject}?"
             rows.append({"user": question, "assistant": str(v)})
 
     rows.extend(generate_recommendation_qa_rows(df, subject_col))
