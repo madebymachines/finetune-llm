@@ -333,25 +333,6 @@ with tab_data:
                     df = read_uploaded_table(train_file)
                     st.write(f"{len(df)} baris, kolom: {list(df.columns)}")
                     st.dataframe(df.head())
-
-                    row_limit_choice = st.radio(
-                        "Jumlah baris yang diproses",
-                        ["Semua baris", "Ambil sebagian (buat tes cepat)"],
-                        horizontal=True, key="row_limit_choice",
-                        help="Pakai 'Ambil sebagian' buat coba alur ini cepat dengan data kecil (mis. 5-10 "
-                        "baris) sebelum jalanin ke data penuh — tidak perlu bikin file CSV terpisah, "
-                        "cukup batasi jumlah baris dari file yang sama ini.",
-                    )
-                    row_limit_n = len(df)
-                    if row_limit_choice == "Ambil sebagian (buat tes cepat)":
-                        row_limit_n = st.number_input(
-                            "Berapa baris pertama", min_value=1, max_value=len(df),
-                            value=min(10, len(df)), key="row_limit_n",
-                        )
-                        df = df.head(int(row_limit_n))
-                        st.caption(f"Cuma {len(df)} baris pertama dari file ini yang dipakai untuk sekarang.")
-
-                    source_id = f"{source_id}:{row_limit_n}"
                     resolved = resolve_conversation_columns(df)
 
                     if resolved["mode"] == "sharegpt":
@@ -380,6 +361,25 @@ with tab_data:
                             "apa pun yang ada di data kamu (tidak perlu diketik manual, dan bekerja sama "
                             "untuk katalog jenis apa saja)."
                         )
+
+                        with st.expander("Batasi jumlah baris (opsional, buat tes cepat)"):
+                            row_limit_choice = st.radio(
+                                "Jumlah baris yang diproses",
+                                ["Semua baris", "Ambil sebagian"],
+                                horizontal=True, key="row_limit_choice",
+                                help="Pakai 'Ambil sebagian' buat coba alur konversi ini cepat dengan data "
+                                "kecil (mis. 5-10 baris) sebelum jalanin ke data penuh — tidak perlu bikin "
+                                "file CSV terpisah, cukup batasi jumlah baris dari file yang sama ini.",
+                            )
+                            if row_limit_choice == "Ambil sebagian":
+                                row_limit_n = st.number_input(
+                                    "Berapa baris pertama", min_value=1, max_value=len(df),
+                                    value=min(10, len(df)), key="row_limit_n",
+                                )
+                                df = df.head(int(row_limit_n))
+                                st.caption(f"Cuma {len(df)} baris pertama dari file ini yang dipakai untuk sekarang.")
+                        source_id = f"{source_id}:{len(df)}"
+
                         conv_method = st.radio(
                             "Metode konversi ke tanya-jawab",
                             ["🔧 Otomatis (rule-based, instan)", "🤖 Otomatis + variasi kalimat dari Gemma"],
