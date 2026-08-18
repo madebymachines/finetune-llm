@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 import streamlit as st
 
@@ -34,8 +36,10 @@ from src.train_utils import (
     StreamlitTrainerCallback,
     apply_lora,
     build_trainer,
+    extract_adapter_zip,
     load_model_and_processor,
     save_lora,
+    zip_lora_adapter,
 )
 
 st.set_page_config(page_title="Gemma-4 Finetune Studio", layout="wide")
@@ -125,11 +129,51 @@ with tab_setup:
         st.caption("Data: percakapan teks (ShareGPT-style).")
 
     st.subheader("1. Load base model")
+    model_source = st.radio(
+        "Sumber model",
+        ["Base model dari Hugging Face", "Adapter hasil training tersimpan (skip training ulang)"],
+        horizontal=True, key="model_source",
+        help="Pilih opsi kedua kalau kamu sudah pernah training & simpan LoRA adapter (tombol \"💾 Simpan "
+        "LoRA adapter\" di tab Train) — model langsung dimuat SUDAH dengan adapter itu terpasang, siap "
+        "dipakai di tab Test/Evaluate tanpa training ulang.",
+    )
+    load_saved_adapter = model_source.startswith("Adapter")
+
     col1, col2 = st.columns(2)
     with col1:
-        model_choice = st.selectbox("Model", GEMMA4_MODELS, index=1)
-        custom_model = st.text_input("Atau isi nama model manual (opsional)")
-        model_name = custom_model.strip() or model_choice
+        if load_saved_adapter:
+            adapter_source = st.radio(
+                "Ambil adapter dari", ["Path folder di runtime ini", "Upload file .zip"],
+                horizontal=True, key="adapter_source_mode",
+                help="Pakai 'Path folder' kalau adapternya masih ada di runtime ini (baru saja training di "
+                "sesi yang sama). Pakai 'Upload file .zip' kalau ini runtime/sesi BARU dan kamu sudah "
+                "download adapter dari sesi sebelumnya (tombol '⬇️ Download adapter' di tab Train).",
+            )
+            if adapter_source == "Upload file .zip":
+                uploaded_zip = st.file_uploader("Upload adapter (.zip)", type=["zip"], key="adapter_zip_uploader")
+                if uploaded_zip is not None:
+                    if st.session_state.get("_extracted_adapter_zip_name") != uploaded_zip.name:
+                        with st.spinner("Mengekstrak adapter..."):
+                            extracted_path = extract_adapter_zip(
+                                uploaded_zip, f"{SCRATCH_DIR}/uploaded_adapter"
+                            )
+                        st.session_state["_extracted_adapter_zip_name"] = uploaded_zip.name
+                        st.session_state["_extracted_adapter_path"] = extracted_path
+                    model_name = st.session_state.get("_extracted_adapter_path", "")
+                    st.caption(f"Adapter siap dipakai dari: `{model_name}`")
+                else:
+                    model_name = ""
+            else:
+                model_name = st.text_input(
+                    "Path folder adapter tersimpan", value="gemma_4_lora",
+                    help="Folder tempat adapter disimpan (berisi adapter_config.json, "
+                    "adapter_model.safetensors, dll.) — sama seperti path yang diisi waktu \"Save LoRA "
+                    "lokal\" di tab Train.",
+                )
+        else:
+            model_choice = st.selectbox("Model", GEMMA4_MODELS, index=1)
+            custom_model = st.text_input("Atau isi nama model manual (opsional)")
+            model_name = custom_model.strip() or model_choice
     with col2:
         max_seq_length = st.number_input(
             "Max sequence length",
@@ -141,7 +185,10 @@ with tab_setup:
         )
         load_in_4bit = st.checkbox("Load in 4-bit", value=True)
 
-    if st.button("Load Model", type="primary", disabled=not cuda_info["available"]):
+    if st.button(
+        "Load Model", type="primary",
+        disabled=not cuda_info["available"] or (load_saved_adapter and not model_name),
+    ):
         # Release whatever was loaded before (model, trainer + its optimizer/gradients)
         # first — otherwise the old model stays pinned in GPU memory via st.session_state.trainer
         # even after we overwrite st.session_state.model, and it silently doubles VRAM usage
@@ -159,49 +206,63 @@ with tab_setup:
             model, processor = load_model_and_processor(modality, model_name, int(max_seq_length), load_in_4bit)
         st.session_state.model = model
         st.session_state.processor = processor
-        st.session_state.lora_applied = False
+        # A saved-adapter path already comes with the LoRA weights baked in
+        # (that's what save_lora() wrote) — "2. LoRA adapters" below would
+        # otherwise try to attach a second, freshly-initialized adapter on
+        # top of it, which is not what "skip training ulang" is asking for.
+        st.session_state.lora_applied = load_saved_adapter
+        st.session_state["_loaded_via_saved_adapter"] = load_saved_adapter
         st.session_state.start_gpu_mem = memory_snapshot()
-        st.success(f"Model '{model_name}' ({modality}) berhasil dimuat.")
+        if load_saved_adapter:
+            st.success(f"Model + adapter dari '{model_name}' ({modality}) berhasil dimuat — siap dipakai di tab Test/Evaluate.")
+        else:
+            st.success(f"Model '{model_name}' ({modality}) berhasil dimuat.")
 
     if st.session_state.model is not None:
         st.info(f"Model aktif: **{model_name}** ({modality}) | Reserved memory: {memory_snapshot()} GB")
 
         st.subheader("2. LoRA adapters")
-        lora_defaults = LORA_DEFAULTS[modality]
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            r = st.number_input("r (rank)", min_value=1, max_value=256, value=lora_defaults["r"])
-            lora_alpha = st.number_input("lora_alpha", min_value=1, max_value=256, value=lora_defaults["lora_alpha"])
-        with c2:
-            lora_dropout = st.number_input("lora_dropout", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-            seed = st.number_input("random_state (seed)", min_value=0, value=3407)
-        with c3:
-            finetune_attention = st.checkbox("Finetune attention modules", value=True)
-            finetune_mlp = st.checkbox("Finetune MLP modules", value=True)
-            finetune_language = st.checkbox("Finetune language layers", value=True)
-            finetune_vision = True
-            if modality == "Vision":
-                finetune_vision = st.checkbox("Finetune vision layers", value=True)
+        if st.session_state.get("_loaded_via_saved_adapter"):
+            st.success(
+                "LoRA sudah aktif — model ini dimuat langsung dari adapter hasil training sebelumnya, "
+                "tidak perlu apply LoRA lagi. Langsung ke tab Test/Evaluate."
+            )
+        else:
+            lora_defaults = LORA_DEFAULTS[modality]
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                r = st.number_input("r (rank)", min_value=1, max_value=256, value=lora_defaults["r"])
+                lora_alpha = st.number_input("lora_alpha", min_value=1, max_value=256, value=lora_defaults["lora_alpha"])
+            with c2:
+                lora_dropout = st.number_input("lora_dropout", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
+                seed = st.number_input("random_state (seed)", min_value=0, value=3407)
+            with c3:
+                finetune_attention = st.checkbox("Finetune attention modules", value=True)
+                finetune_mlp = st.checkbox("Finetune MLP modules", value=True)
+                finetune_language = st.checkbox("Finetune language layers", value=True)
+                finetune_vision = True
+                if modality == "Vision":
+                    finetune_vision = st.checkbox("Finetune vision layers", value=True)
 
-        if st.button("Apply LoRA Adapters", disabled=st.session_state.lora_applied):
-            with st.spinner("Applying LoRA adapters..."):
-                st.session_state.model = apply_lora(
-                    modality,
-                    st.session_state.model,
-                    r=int(r),
-                    lora_alpha=int(lora_alpha),
-                    lora_dropout=float(lora_dropout),
-                    finetune_attention_modules=finetune_attention,
-                    finetune_mlp_modules=finetune_mlp,
-                    finetune_language_layers=finetune_language,
-                    finetune_vision_layers=finetune_vision,
-                    seed=int(seed),
-                )
-            st.session_state.lora_applied = True
-            st.success("LoRA adapters applied.")
+            if st.button("Apply LoRA Adapters", disabled=st.session_state.lora_applied):
+                with st.spinner("Applying LoRA adapters..."):
+                    st.session_state.model = apply_lora(
+                        modality,
+                        st.session_state.model,
+                        r=int(r),
+                        lora_alpha=int(lora_alpha),
+                        lora_dropout=float(lora_dropout),
+                        finetune_attention_modules=finetune_attention,
+                        finetune_mlp_modules=finetune_mlp,
+                        finetune_language_layers=finetune_language,
+                        finetune_vision_layers=finetune_vision,
+                        seed=int(seed),
+                    )
+                st.session_state.lora_applied = True
+                st.success("LoRA adapters applied.")
 
-        if st.session_state.lora_applied:
-            st.success("LoRA sudah aktif pada model ini.")
+            if st.session_state.lora_applied:
+                st.success("LoRA sudah aktif pada model ini.")
 
     st.subheader("3. System prompt untuk Test & Evaluate")
     st.caption(
@@ -718,7 +779,22 @@ with tab_train:
                 lora_path = st.text_input("Path simpan LoRA", value="gemma_4_lora")
                 if st.button("Save LoRA lokal"):
                     save_lora(st.session_state.model, st.session_state.processor, lora_path)
+                    st.session_state["_last_saved_lora_path"] = lora_path
                     st.success(f"LoRA adapters disimpan ke '{lora_path}'.")
+
+                saved_path = st.session_state.get("_last_saved_lora_path")
+                if saved_path and os.path.isdir(saved_path):
+                    st.caption(
+                        "Path di runtime ini hilang begitu Colab restart/disconnect — download adapternya "
+                        "di bawah kalau mau dipakai lagi tanpa training ulang di sesi lain (nanti tinggal "
+                        "upload .zip-nya lagi di tab Setup)."
+                    )
+                    st.download_button(
+                        "⬇️ Download adapter (.zip)",
+                        data=zip_lora_adapter(saved_path),
+                        file_name=f"{os.path.basename(saved_path.rstrip('/'))}.zip",
+                        mime="application/zip",
+                    )
 
 # ---------------------------------------------------------------------------
 # Test tab

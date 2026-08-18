@@ -200,3 +200,42 @@ def build_trainer(modality: str, model, processor, train_dataset, eval_dataset, 
 def save_lora(model, processor, path: str):
     model.save_pretrained(path)
     processor.save_pretrained(path)
+
+
+def zip_lora_adapter(path: str) -> bytes:
+    """Zip a saved LoRA adapter folder into in-memory bytes, ready for
+    st.download_button — so the adapter can be downloaded and re-uploaded
+    in a different session/runtime (Colab's local disk doesn't survive a
+    runtime restart). The folder's own name is kept as the zip's top-level
+    entry, so unzipping recreates the same folder structure."""
+    import io
+    import os
+    import zipfile
+
+    base_dir = os.path.dirname(os.path.normpath(path)) or "."
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(path):
+            for f in files:
+                full = os.path.join(root, f)
+                zf.write(full, os.path.relpath(full, base_dir))
+    return buf.getvalue()
+
+
+def extract_adapter_zip(uploaded_file, dest_dir: str) -> str:
+    """Extract an uploaded adapter .zip (from zip_lora_adapter, or hand-made
+    by the user) into `dest_dir`, then return the path to whichever
+    directory actually holds adapter_config.json — the zip might extract
+    the adapter directly into dest_dir, or one level deeper inside a
+    wrapping folder, depending on how it was zipped, so this walks the
+    extracted tree instead of assuming one fixed layout."""
+    import os
+    import zipfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+    with zipfile.ZipFile(uploaded_file) as zf:
+        zf.extractall(dest_dir)
+    for root, _, files in os.walk(dest_dir):
+        if "adapter_config.json" in files:
+            return root
+    return dest_dir
