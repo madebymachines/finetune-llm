@@ -357,7 +357,20 @@ with tab_data:
                 if is_table:
                     df = read_uploaded_table(train_file)
                     st.write(f"{len(df)} baris, kolom: {list(df.columns)}")
-                    st.dataframe(df.head())
+                    conv_col = next((c for c in df.columns if c.lower() == "conversations"), None)
+                    if conv_col is not None:
+                        # st.dataframe can't render a list-of-dict cell (shows "[object Object]"),
+                        # so flatten the first few conversations into readable role/content rows.
+                        preview_rows = []
+                        for i, convo in enumerate(df[conv_col].head(3)):
+                            for m in convo if isinstance(convo, list) else []:
+                                role = m.get("role", m.get("from", ""))
+                                content = str(m.get("content", m.get("value", "")))
+                                preview_rows.append({"baris": i, "role": role, "content": content[:300] + ("…" if len(content) > 300 else "")})
+                        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+                        st.caption("Preview 3 percakapan pertama, dipecah per pesan (kolom `conversations` aslinya berisi list role/content).")
+                    else:
+                        st.dataframe(df.head())
                     resolved = resolve_conversation_columns(df)
 
                     if resolved["mode"] == "sharegpt":
