@@ -121,8 +121,16 @@ class StreamlitTrainerCallback(TrainerCallback):
             self.log_placeholder.code("\n".join(self.log_lines))
 
     def on_train_begin(self, args, state, control, **kwargs):
-        total = args.max_steps if args.max_steps and args.max_steps > 0 else "?"
+        total = state.max_steps or (args.max_steps if args.max_steps and args.max_steps > 0 else "?")
         self._log(f"🚀 Training dimulai — target {total} steps.")
+        # The first optimizer step is much slower than the rest (Unsloth compiles
+        # its kernels / builds the CUDA graph on first use) — say so, otherwise
+        # a 1-3 minute silence before "Step 1" looks like a hang.
+        self.progress_bar.progress(0.0)
+        self.status_text.text(
+            f"Step 0/{total} — step pertama sedang dikompilasi (Unsloth/Triton), biasanya 1-3 menit "
+            "tanpa update. Setelah itu tiap step jauh lebih cepat."
+        )
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not logs or "loss" not in logs:

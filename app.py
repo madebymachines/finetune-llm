@@ -782,14 +782,21 @@ with tab_train:
                 if modality == "Vision":
                     sft_kwargs["max_grad_norm"] = 0.3
 
-            trainer = build_trainer(
-                modality,
-                st.session_state.model,
-                st.session_state.processor,
-                st.session_state.train_dataset,
-                st.session_state.eval_dataset,
-                sft_kwargs,
-            )
+            # Building the trainer tokenizes the whole dataset (+ responses-only
+            # masking) BEFORE any progress bar exists — without a spinner the page
+            # just looks frozen for up to a couple of minutes on ~1.5k rows.
+            with st.spinner(
+                f"Menyiapkan trainer: tokenisasi {len(st.session_state.train_dataset)} baris + masking "
+                "responses-only. Bisa 1-2 menit, belum ada progress bar di tahap ini..."
+            ):
+                trainer = build_trainer(
+                    modality,
+                    st.session_state.model,
+                    st.session_state.processor,
+                    st.session_state.train_dataset,
+                    st.session_state.eval_dataset,
+                    sft_kwargs,
+                )
 
             if modality == "Text":
                 # Sanity check masking: cuma giliran `model` yang boleh masuk loss.
