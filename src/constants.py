@@ -13,10 +13,19 @@ CHAT_TEMPLATE = "gemma-4"
 INSTRUCTION_PART = "<|turn>user\n"
 RESPONSE_PART = "<|turn>model\n"
 
-# Gemma-4 team recommended generation settings
-DEFAULT_TEMPERATURE = 1.0
+# Generation defaults. Gemma-4 team recommends temperature=1.0 for general chat,
+# but for a product-catalog chatbot (fact accuracy > creative variety) the
+# research runs in this repo showed low temperature gives consistent, grounded
+# answers — so 0.3 is the default here; raise it in the Test tab if needed.
+GEMMA_RECOMMENDED_TEMPERATURE = 1.0
+DEFAULT_TEMPERATURE = 0.3
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 64
+
+# System prompt file produced alongside dataset/build_chat_dataset.py. When it
+# exists, the Test/Evaluate "System prompt" field defaults to its content so
+# inference uses the SAME system prompt the training rows were built with.
+DEFAULT_SYSTEM_PROMPT_FILE = "dataset/system_prompt_short.txt"
 
 MODALITIES = ["Text", "Vision", "Audio"]
 

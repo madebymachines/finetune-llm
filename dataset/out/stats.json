@@ -1,0 +1,30 @@
+{
+  "catalog": "products_2026-08-10.xlsx",
+  "products": 51,
+  "needs": 29,
+  "system_prompt_chars": 362,
+  "rows_total": 1684,
+  "rows_train": 1599,
+  "rows_val": 85,
+  "rows_by_kind": {
+    "identity": 12,
+    "fact": 808,
+    "category_list": 45,
+    "need_rec": 316,
+    "need_rec_multi": 152,
+    "fact_multi": 151,
+    "persona": 120,
+    "guardrail": 19,
+    "dont_know": 24,
+    "vague": 15,
+    "out_of_catalog": 22
+  },
+  "chars_per_convo": {
+    "min": 414,
+    "median": 604,
+    "p95": 1008,
+    "max": 1712,
+    "est_tokens_max": 570
+  },
+  "seed": 3407
+}

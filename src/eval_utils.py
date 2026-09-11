@@ -112,6 +112,7 @@ def generate_batch(
     top_p: float = DEFAULT_TOP_P,
     top_k: int = DEFAULT_TOP_K,
     use_adapter: bool = True,
+    histories: list[list[dict] | None] | None = None,
 ) -> list[str]:
     """Text-only batched generation: builds one left-padded batch and calls
     model.generate() ONCE for the whole list, instead of once per prompt like
@@ -144,8 +145,9 @@ def generate_batch(
     # all sequences from a shared position instead of continuing mid-padding
     # for the shorter ones.
     per_item_ids = []
-    for text in texts:
-        messages = build_messages(modality, text, system_prompt=system_prompt)
+    histories = histories or [None] * len(texts)
+    for text, history in zip(texts, histories):
+        messages = build_messages(modality, text, system_prompt=system_prompt, history=history)
         encoded = processor.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt",
         )
@@ -363,6 +365,27 @@ def extract_key_facts(text: str, max_facts: int = 8) -> list[str]:
     return facts[:max_facts]
 
 
+def check_keyword_grounding(expected_keywords: str, generated: str) -> dict:
+    """Explicit-keyword variant of check_factual_grounding() for hand-written
+    eval sets (dataset/eval_realistic.csv): `expected_keywords` is
+    "A|B/C|D" — groups separated by `|` must ALL be satisfied, and a group with
+    `/` is satisfied by ANY of its alternatives. Case-insensitive substring
+    match. Empty `expected_keywords` -> score None (nothing to verify, e.g. a
+    curhat-only prompt that needs a human read)."""
+    groups = [g.strip() for g in str(expected_keywords or "").split("|") if g.strip()]
+    if not groups:
+        return {"score": None, "matched": [], "missed": [], "verdict": "–"}
+    gen_lower = generated.lower()
+    matched, missed = [], []
+    for g in groups:
+        alts = [a.strip() for a in g.split("/") if a.strip()]
+        hit = next((a for a in alts if a.lower() in gen_lower), None)
+        (matched if hit else missed).append(hit or g)
+    score = len(matched) / len(groups)
+    verdict = "✅" if score >= 0.7 else ("⚠️" if score > 0 else "❌")
+    return {"score": score, "matched": matched, "missed": missed, "verdict": verdict}
+
+
 def check_factual_grounding(expected: str, generated: str, max_facts: int = 8) -> dict:
     """Rough, automatic stand-in for manually reading whether a generated
     answer actually contains the facts from the expected (training-row)
@@ -394,7 +417,8 @@ def before_after_compare(
     top_k: int = DEFAULT_TOP_K,
     batch_size: int = 4,
 ):
-    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray}.
+    """items: list of {"text": str, "image"?: PIL.Image, "audio"?: np.ndarray, "history"?: list[dict]}.
+    `history` (Text only) is prior turns replayed before `text`, for multi-turn eval prompts.
     For each item, generate with the LoRA adapter disabled (base model
     behaviour) and enabled (finetuned), reusing the same loaded weights.
 
@@ -405,6 +429,7 @@ def before_after_compare(
     docstring for why)."""
     if modality == "Text":
         prompts = [item["text"] for item in items]
+        histories = [item.get("history") for item in items]
         results = []
         step = max(1, batch_size)
         for start in range(0, len(prompts), step):
@@ -415,6 +440,7 @@ def before_after_compare(
                 temperature=temperature,
                 top_p=top_p,
                 top_k=top_k,
+                histories=histories[start:start + step],
             )
             base_outputs = generate_batch(modality, model, processor, chunk, use_adapter=False, **shared_kwargs)
             finetuned_outputs = generate_batch(modality, model, processor, chunk, use_adapter=True, **shared_kwargs)

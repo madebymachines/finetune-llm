@@ -17,6 +17,8 @@ outputs/
 *.csv
 *.xlsx
 *.xls
+# ...kecuali file kurasi dataset builder (kecil, hasil kerja manual, harus ikut di-track)
+!dataset/*.csv
 
 # OS
 .DS_Store

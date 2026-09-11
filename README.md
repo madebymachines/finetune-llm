@@ -41,6 +41,9 @@ streamlit run app.py
      dipetakan manual lewat Template Builder (`{nama_kolom}` placeholder); dokumen dengan pola
      `User: "..." AI: "..."` di-auto-extract ke tabel yang bisa diedit langsung di UI sebelum
      dipakai. Atau pakai dataset HF Hub (default `mlabonne/FineTome-100k`).
+     **Untuk chatbot katalog produk, jalur yang direkomendasikan adalah dataset builder di
+     `dataset/` (lihat bagian "Dataset builder" di bawah)**: hasilnya `train.jsonl` dengan kolom
+     `conversations` (termasuk role `system`) yang tinggal di-upload di tab ini.
    - **Vision**: dataset HF Hub dengan kolom gambar+teks (default `unsloth/LaTeX_OCR`), atau
      upload banyak gambar + CSV/Excel berisi nama file, pertanyaan (opsional), dan jawaban.
    - **Audio**: dataset HF Hub dengan kolom audio+transkrip (default
@@ -55,12 +58,17 @@ streamlit run app.py
    - Text: chat multi-turn interaktif (streaming token-by-token).
    - Vision: upload satu gambar + pertanyaan, lihat jawaban model.
    - Audio: upload satu file audio + pertanyaan (mis. transkripsi), lihat jawaban model.
-   - Toggle adapter (base vs hasil finetune), parameter generation sesuai rekomendasi Gemma-4
-     (`temperature=1.0, top_p=0.95, top_k=64`). Field "System prompt" murni opsional untuk
-     eksperimen manual saat testing — bukan bagian dari data training.
+   - Toggle adapter (base vs hasil finetune). Default `temperature=0.3` (bukan 1.0 rekomendasi
+     Gemma-4) karena untuk chatbot katalog akurasi fakta lebih penting daripada variasi; naikkan
+     lewat slider kalau perlu. Field "System prompt" default berisi `dataset/system_prompt_short.txt`,
+     yaitu system prompt yang **sama** dengan yang ditanam di data training oleh dataset builder —
+     jangan diganti persona lain saat test, mismatch system prompt bikin jawaban ngaco.
 5. **📈 Evaluate** — **Before vs After**: bandingkan output base model vs hasil finetune pada
    prompt/gambar/audio yang sama (adapter di-nonaktifkan sementara via `model.disable_adapter()`,
-   tanpa perlu load model dua kali), hasil bisa diunduh sebagai CSV.
+   tanpa perlu load model dua kali), hasil bisa diunduh sebagai CSV. Untuk Text, upload
+   `dataset/eval_realistic.csv` (prompt gaya user asli yang tidak ada di training, termasuk
+   multi-turn lewat kolom `history`) supaya skor cek-fakta-nya jujur; eval split acak dari template
+   yang sama cenderung terlalu optimis.
 
 ## Struktur
 
@@ -71,7 +79,54 @@ src/gpu_utils.py           # cek CUDA & memory stats, pembersih cache CUDA
 src/data_utils.py          # load dataset HF / upload custom / template builder / builder Vision & Audio
 src/train_utils.py         # load model (modality-aware), LoRA, SFTTrainer, callback progress
 src/eval_utils.py          # streaming chat, before-vs-after compare (modality-aware)
+dataset/                   # dataset builder untuk chatbot katalog (lihat bagian di bawah)
 ```
+
+## Dataset builder (Text, chatbot katalog produk)
+
+Latar belakang: dataset tanya-jawab yang jawabannya nilai kolom mentah (`"Emina"`, `"Deco"`,
+`"50000.0"`) bikin model hafal fakta, tapi nggak bisa merespons curhat ("aku bete, kulitku
+kering") dengan rekomendasi, dan gaya jawabnya jadi pendek/kaku. Builder ini membangun dataset
+percakapan yang lebih lengkap dari katalog + kurasi manual:
+
+```
+dataset/
+  build_chat_dataset.py       # builder: katalog + mapping + persona -> out/train.jsonl, val.jsonl
+  templates_id.py             # cara nanya & cara ngomong (tanpa fakta apa pun)
+  extract_persona_examples.py # parse PDF simulasi curhat -> persona_examples.csv
+  system_prompt_short.txt     # system prompt pendek, dipakai SAMA di training & test
+  needs_mapping.csv           # KURASI MANUAL: keluhan -> produk -> alasan (sumber rekomendasi)
+  persona_examples.csv        # hasil extract PDF (curhat tanpa produk + jawaban "nggak tahu")
+  eval_realistic.csv          # set evaluasi: prompt gaya user asli, tidak ada di training
+  out/                        # hasil build: train.jsonl, val.jsonl, stats.json, preview.md
+```
+
+Alur:
+
+```bash
+python dataset/extract_persona_examples.py   # hanya kalau PDF simulasinya berubah
+python dataset/build_chat_dataset.py         # baca products_*.xlsx terbaru di root repo
+```
+
+Lalu di app: **Data** → upload `dataset/out/train.jsonl` → "Gunakan data ini" → terapkan chat
+template. **Train** → sebelum training ada expander "Cek bagian yang dilatih": pastikan yang masuk
+loss cuma jawaban asisten (system prompt + pesan user harus di bagian DI-MASK). **Test** → biarkan
+system prompt default. **Evaluate** → upload `dataset/eval_realistic.csv`.
+
+Jenis baris yang dihasilkan (lihat `stats.json`): fakta per produk (jawaban kalimat natural,
+harga terformat `Rp50.000`, jujur kalau kolom kosong), daftar produk per kategori, curhat →
+empati + rekomendasi + alasan (+harga) + pertanyaan lanjutan, multi-turn ("harganya berapa?"
+setelah produk disebut), curhat murni tanpa produk (dari PDF), guardrail (self-harm, medis,
+ilegal, manipulasi), pertanyaan yang memang nggak bisa dijawab (stok/diskon), dan produk di luar
+katalog (jujur nggak ada). Semua fakta selalu dari katalog atau `needs_mapping.csv`, nggak ada
+yang di-generate LLM, jadi nggak bisa ngarang produk.
+
+Yang perlu dirawat manual: `needs_mapping.csv` (kolom `alasan` harus tetap sesuai deskripsi
+katalog; kolom `reviewed` buat menandai baris yang sudah dicek), `system_prompt_short.txt`
+(kalau diubah, build ulang dataset DAN pakai versi yang sama saat test), dan `eval_realistic.csv`.
+Kalau katalog diperbarui, cukup taruh `products_<tanggal>.xlsx` baru di root dan build ulang;
+nama produk di `needs_mapping.csv` harus persis sama dengan kolom `name` (builder menolak kalau
+ada yang nggak cocok).
 
 ## Catatan desain
 

@@ -197,6 +197,31 @@ def build_trainer(modality: str, model, processor, train_dataset, eval_dataset, 
     return trainer
 
 
+def trained_spans_preview(trainer, tokenizer, index: int = 0) -> dict:
+    """Decode one training sample and split it into the tokens the loss is
+    computed on (label != -100) vs the masked ones. Used in the Train tab as a
+    sanity check that train_on_responses_only() masks the system + user turns
+    and keeps ONLY the model turns — important now that training rows can carry
+    a `system` role (see dataset/build_chat_dataset.py): if the mask were wrong,
+    the model would be trained to regurgitate the system prompt."""
+    ds = trainer.train_dataset
+    sample = ds[index]
+    labels = sample.get("labels")
+    input_ids = sample["input_ids"]
+    if labels is None:
+        batch = trainer.data_collator([{k: sample[k] for k in ("input_ids", "attention_mask") if k in sample}])
+        input_ids = batch["input_ids"][0].tolist()
+        labels = batch["labels"][0].tolist()
+    trained = [int(t) for t, l in zip(input_ids, labels) if int(l) != -100]
+    masked = [int(t) for t, l in zip(input_ids, labels) if int(l) == -100]
+    return {
+        "trained_text": tokenizer.decode(trained),
+        "masked_text": tokenizer.decode(masked),
+        "n_trained": len(trained),
+        "n_total": len(input_ids),
+    }
+
+
 def save_lora(model, processor, path: str):
     model.save_pretrained(path)
     processor.save_pretrained(path)

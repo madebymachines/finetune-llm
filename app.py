@@ -1,9 +1,11 @@
+import json
 import os
 
 import pandas as pd
 import streamlit as st
 
 from src.constants import (
+    DEFAULT_SYSTEM_PROMPT_FILE,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
@@ -30,7 +32,13 @@ from src.data_utils import (
     sharegpt_df_to_dataset,
     train_eval_split,
 )
-from src.eval_utils import augment_qa_paraphrases, before_after_compare, check_factual_grounding, stream_chat_response
+from src.eval_utils import (
+    augment_qa_paraphrases,
+    before_after_compare,
+    check_factual_grounding,
+    check_keyword_grounding,
+    stream_chat_response,
+)
 from src.gpu_utils import check_cuda, clear_gpu_cache, memory_snapshot
 from src.train_utils import (
     StreamlitTrainerCallback,
@@ -39,12 +47,25 @@ from src.train_utils import (
     extract_adapter_zip,
     load_model_and_processor,
     save_lora,
+    trained_spans_preview,
     zip_lora_adapter,
 )
 
 st.set_page_config(page_title="Gemma-4 Finetune Studio", layout="wide")
 
 SCRATCH_DIR = "/tmp/gemma4_finetune_studio"
+
+
+def _default_system_prompt() -> str:
+    """Isi dataset/system_prompt_short.txt kalau ada (system prompt yang sama
+    dengan yang dipakai build_chat_dataset.py), supaya Test/Evaluate langsung
+    konsisten dengan data training. Kosong kalau file-nya nggak ada."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), DEFAULT_SYSTEM_PROMPT_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -60,6 +81,7 @@ defaults = {
     "trained": False,
     "start_gpu_mem": None,
     "chat_history": [],
+    "last_system_prompt": _default_system_prompt(),
 }
 for key, value in defaults.items():
     st.session_state.setdefault(key, value)
@@ -310,7 +332,10 @@ with tab_data:
             st.caption(
                 "Upload data kamu — format apa saja: CSV/Excel/JSON/JSONL (percakapan siap pakai atau tabel "
                 "mentah seperti katalog produk) atau dokumen (PDF/DOCX/TXT/MD). Otomatis diubah jadi tabel "
-                "tanya-jawab — tidak perlu isi template apa pun, tinggal cek & edit hasilnya sebelum dipakai."
+                "tanya-jawab — tidak perlu isi template apa pun, tinggal cek & edit hasilnya sebelum dipakai. "
+                "**Direkomendasikan untuk katalog produk:** bangun dulu `dataset/out/train.jsonl` dengan "
+                "`python dataset/build_chat_dataset.py` (curhat→rekomendasi, multi-turn, guardrail, system "
+                "prompt konsisten), lalu upload JSONL-nya di sini — kolom `conversations` langsung dipakai."
             )
             train_file = st.file_uploader(
                 "Data training",
@@ -753,6 +778,26 @@ with tab_train:
                 sft_kwargs,
             )
 
+            if modality == "Text":
+                # Sanity check masking: cuma giliran `model` yang boleh masuk loss.
+                # Penting sejak baris training bisa punya role `system`.
+                try:
+                    spans = trained_spans_preview(trainer, st.session_state.processor)
+                    with st.expander("🔍 Cek bagian yang dilatih (baris 0 train set)", expanded=False):
+                        st.caption(
+                            f"{spans['n_trained']} dari {spans['n_total']} token masuk loss. Yang DILATIH harus cuma "
+                            "jawaban asisten; system prompt dan pesan user harus ada di bagian DI-MASK."
+                        )
+                        st.text_area("DILATIH (label != -100)", spans["trained_text"], height=120)
+                        st.text_area("DI-MASK (label == -100)", spans["masked_text"], height=120)
+                    if spans["n_trained"] == 0 or spans["n_trained"] > 0.9 * spans["n_total"]:
+                        st.warning(
+                            "Masking terlihat aneh (hampir semua atau tidak ada token yang dilatih). Cek "
+                            "INSTRUCTION_PART/RESPONSE_PART di src/constants.py vs chat template."
+                        )
+                except Exception as e:  # preview only — never block training
+                    st.caption(f"(Preview masking tidak tersedia: {e})")
+
             progress_bar = st.progress(0.0)
             status_text = st.empty()
             chart_placeholder = st.empty()
@@ -819,10 +864,12 @@ with tab_test:
 
         if modality == "Text":
             system_prompt = st.text_area(
-                "System prompt (opsional)", value=st.session_state.get("last_system_prompt", ""),
+                "System prompt", value=st.session_state.get("last_system_prompt", ""),
                 height=100,
-                help="Cuma dipakai saat chat di sini — tidak ikut masuk ke data training (training-nya murni "
-                "user/assistant, tanpa system prompt).",
+                help="Default diambil dari dataset/system_prompt_short.txt — system prompt yang SAMA dengan yang "
+                "dipakai build_chat_dataset.py di data training. Kalau training pakai dataset itu, jangan "
+                "diganti jadi persona panjang lain: mismatch system prompt antara training dan test bikin "
+                "jawaban ngaco. Kosongkan hanya kalau data training-nya memang tanpa role system.",
             )
             st.session_state["last_system_prompt"] = system_prompt
             for msg in st.session_state.chat_history:
@@ -929,6 +976,43 @@ with tab_eval:
             )
             st.session_state["last_system_prompt"] = system_prompt_eval
 
+            st.markdown("**Set evaluasi realistis (direkomendasikan)**")
+            st.caption(
+                "Upload CSV dengan kolom `prompt` (wajib), `expected_keywords` (opsional, format `A|B/C`: semua "
+                "grup `|` harus ada, `/` = salah satu), `history` (opsional, JSON list role/content untuk "
+                "multi-turn), `kategori` (opsional). Contoh: `dataset/eval_realistic.csv` — prompt gaya user "
+                "asli yang TIDAK ada di training, jadi skornya jujur (eval split dari template yang sama "
+                "cenderung terlalu bagus)."
+            )
+            eval_csv = st.file_uploader("CSV evaluasi", type=["csv"], key="eval_csv_uploader")
+            if eval_csv is not None and st.button("🎯 Pakai prompt dari CSV ini", key="use_eval_csv_prompts"):
+                edf = pd.read_csv(eval_csv).fillna("")
+                if "prompt" not in edf.columns:
+                    st.error("CSV harus punya kolom `prompt`.")
+                else:
+                    eval_items, kw_map, cat_map = [], {}, {}
+                    for _, r in edf.iterrows():
+                        text = str(r["prompt"]).strip()
+                        if not text:
+                            continue
+                        item = {"text": text}
+                        hist = str(r.get("history", "")).strip()
+                        if hist:
+                            try:
+                                item["history"] = json.loads(hist)
+                            except json.JSONDecodeError:
+                                st.warning(f"Kolom history bukan JSON valid, dilewati untuk prompt: {text[:60]}")
+                        eval_items.append(item)
+                        kw = str(r.get("expected_keywords", "")).strip()
+                        if kw:
+                            kw_map[text] = kw
+                        if "kategori" in edf.columns:
+                            cat_map[text] = str(r["kategori"])
+                    items = eval_items
+                    st.session_state["_eval_expected_map"] = {}
+                    st.session_state["_eval_keyword_map"] = kw_map
+                    st.session_state["_eval_category_map"] = cat_map
+
             raw_eval = st.session_state.get("_raw_eval_dataset")
             if raw_eval is not None and len(raw_eval) > 0:
                 if st.button("🎯 Pakai contoh dari eval split (otomatis cek fakta)", key="use_eval_split_prompts"):
@@ -941,6 +1025,8 @@ with tab_eval:
                             expected_map[user_msgs[0]] = assistant_msgs[0]
                     items = eval_items
                     st.session_state["_eval_expected_map"] = expected_map
+                    st.session_state["_eval_keyword_map"] = {}
+                    st.session_state["_eval_category_map"] = {}
                 st.caption(
                     f"Ambil {len(raw_eval)} pertanyaan dari eval split (data yang tidak ikut training) — "
                     "otomatis cek apakah fakta dari jawaban aslinya muncul di jawaban model."
@@ -992,10 +1078,17 @@ with tab_eval:
                     batch_size=compare_batch_size,
                 )
             expected_map = st.session_state.get("_eval_expected_map", {}) if modality == "Text" else {}
-            if expected_map:
+            keyword_map = st.session_state.get("_eval_keyword_map", {}) if modality == "Text" else {}
+            category_map = st.session_state.get("_eval_category_map", {}) if modality == "Text" else {}
+            if expected_map or keyword_map or category_map:
                 for r in results:
-                    expected = expected_map.get(r["prompt"])
-                    check = check_factual_grounding(expected, r["finetuned_model"]) if expected else None
+                    if category_map:
+                        r["kategori"] = category_map.get(r["prompt"], "")
+                    if r["prompt"] in keyword_map:
+                        check = check_keyword_grounding(keyword_map[r["prompt"]], r["finetuned_model"])
+                    else:
+                        expected = expected_map.get(r["prompt"])
+                        check = check_factual_grounding(expected, r["finetuned_model"]) if expected else None
                     if check and check["score"] is not None:
                         r["fakta_terpenuhi"] = f"{check['verdict']} {round(check['score'] * 100)}%"
                         r["fakta_hilang"] = ", ".join(check["missed"])
