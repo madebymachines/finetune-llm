@@ -2,29 +2,31 @@
   "catalog": "products_2026-08-10.xlsx",
   "products": 51,
   "needs": 29,
-  "system_prompt_chars": 362,
-  "rows_total": 1684,
-  "rows_train": 1599,
-  "rows_val": 85,
+  "system_prompt_chars": 421,
+  "rows_total": 1879,
+  "rows_train": 1785,
+  "rows_val": 94,
   "rows_by_kind": {
     "identity": 12,
-    "fact": 808,
+    "fact": 889,
     "category_list": 45,
-    "need_rec": 316,
-    "need_rec_multi": 152,
-    "fact_multi": 151,
+    "need_rec": 302,
+    "need_rec_multi": 166,
+    "fact_multi": 152,
     "persona": 120,
+    "emotional": 70,
+    "bridge": 51,
     "guardrail": 19,
     "dont_know": 24,
-    "vague": 15,
-    "out_of_catalog": 22
+    "vague": 8,
+    "out_of_catalog": 21
   },
   "chars_per_convo": {
-    "min": 414,
-    "median": 604,
-    "p95": 1008,
-    "max": 1712,
-    "est_tokens_max": 570
+    "min": 473,
+    "median": 680,
+    "p95": 1280,
+    "max": 2185,
+    "est_tokens_max": 728
   },
   "seed": 3407
 }

@@ -24,6 +24,14 @@ Jenis baris yang dibuat (kolom "kind" di stats):
   dont_know       pertanyaan katalog yang nggak bisa dijawab (stok, diskon, ...)
   vague           pesan user yang nggak jelas -> minta diperjelas (jawaban PDF)
   out_of_catalog  produk yang nggak ada di katalog -> jujur
+  emotional       curhat topik di luar PDF (putus, insecure, burnout, ...) tanpa produk
+  bridge          curhat -> user pivot ke kulit/penampilan -> rekomendasi ringan (multi-turn)
+
+Kolom katalog yang kosong TIDAK langsung dijawab "nggak ada data": kandungan,
+keunggulan, dan "cocok untuk" dicoba diambil dulu dari teks description
+(bagian "Kandungan Utama"/"Specially Made With"/"Keunggulan:"/"Cocok Untuk:",
+atau kalimat "Dengan/Mengandung/Diformulasikan dengan ..."), dikutip apa adanya.
+Harga tidak punya fallback: kalau kolom price kosong, jawabannya jujur.
 
 Jalankan:
     python dataset/build_chat_dataset.py
@@ -63,6 +71,7 @@ FIELD_BY_INTENT = {
     "cara_pakai": "cara_pakai",
     "aktivitas": "activity_related",
     "merek": "brand",
+    "detail": "description",
 }
 # Intent yang, kalau kolomnya kosong, tetap dibuat barisnya dengan jawaban jujur "nggak ada info".
 ASK_EVEN_IF_EMPTY = {"harga", "shades", "kandungan"}
@@ -111,6 +120,67 @@ def lower_first(s: str) -> str:
     return s[:1].lower() + s[1:] if s else s
 
 
+_BULLET_PREFIX = re.compile(r"^[^\w(]+")  # emoji/bullet/angka di awal baris
+
+
+def _looks_like_header(line: str) -> bool:
+    ln = line.strip()
+    return bool(ln) and len(ln) < 40 and not ln.endswith((",", ".", "!", ";")) and ":" not in ln and not _BULLET_PREFIX.match(ln)
+
+
+def description_section(desc: str, headers: list[str], max_chars: int = 600) -> str | None:
+    """Ambil isi bagian ber-judul di description, mis. 'Keunggulan:' / 'Kandungan
+    Utama' / 'Cocok Untuk:'. Berhenti di baris kosong, di judul berikutnya
+    ('Xxx:' atau baris pendek tanpa tanda baca), atau di batas max_chars."""
+    desc = clean_text(desc)
+    lines = desc.split("\n")
+    hdr = re.compile(r"^\s*(?:%s)\s*:?\s*(.*)$" % "|".join(re.escape(h) for h in headers), re.IGNORECASE)
+    for i, ln in enumerate(lines):
+        m = hdr.match(ln)
+        if not m:
+            continue
+        out = [m.group(1).strip()] if m.group(1).strip() else []
+        for nxt in lines[i + 1:]:
+            t = nxt.strip()
+            if not t:
+                if out:
+                    break
+                continue
+            if re.match(r"^[A-Za-z][^\n]{0,40}:\s*$", t) or (out and _looks_like_header(t)):
+                break
+            out.append(_BULLET_PREFIX.sub("", t) if len(t) < 200 else t)
+        text = "\n".join(x for x in out if x)
+        text = text.replace("✨", "").strip()
+        if text:
+            return text if len(text) <= max_chars else text[:max_chars].rsplit("\n", 1)[0].rstrip(",;") + "\n(…)"
+    return None
+
+
+_INGREDIENT_KEYWORDS = [
+    "mengandung", "kandungan", "diperkaya", "dilengkapi dengan", "diformulasikan dengan",
+    "formulated with", "infused with", "dengan ",
+]
+
+
+def ingredient_sentence(desc: str) -> str | None:
+    """Kalimat di description yang menyebut bahan ('Dengan Oat Amino, Advanced
+    Ceramide ... menjadikan kulit ...'), dikutip utuh — bukan di-parse jadi
+    daftar, supaya nggak salah potong."""
+    desc = clean_text(desc).replace("\n", " ")
+    sentences = re.split(r"(?<=[.!?])\s+", desc)
+    for kw in _INGREDIENT_KEYWORDS:
+        for s in sentences:
+            low = s.lower().strip()
+            if not (20 <= len(s) <= 300):
+                continue
+            # "dengan" terlalu umum ("pembersih dengan format gel") — hanya terima
+            # kalau kalimatnya DIMULAI "Dengan <bahan>, ..." (pola khas daftar bahan).
+            hit = low.startswith("dengan ") if kw == "dengan " else kw in low
+            if hit:
+                return s.strip()
+    return None
+
+
 def format_price(v) -> str | None:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return None
@@ -153,7 +223,25 @@ def definisi_value(name: str, category: str, desc: str) -> str:
     return f"{name} itu{cat} dari Emina. {para}"
 
 
-def format_value(intent: str, raw, name: str = "", category: str = "") -> str | None:
+def full_description(desc: str, max_chars: int = MAX_ANSWER_CHARS) -> str:
+    """Seluruh description (bukan cuma paragraf pertama): bullet dirapikan,
+    prefix marketing dibuang, dipotong di batas baris kalau kepanjangan."""
+    desc = clean_text(desc).replace("✨", "")
+    lines = []
+    for ln in desc.split("\n"):
+        t = ln.strip()
+        if not t:
+            continue
+        t = _BULLET_PREFIX.sub("- ", t) if _BULLET_PREFIX.match(t) and not re.match(r"^\d+[.)]", t) else t
+        lines.append(t)
+    text = "\n".join(lines)
+    text = _MARKETING_PREFIX.sub("", text).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rsplit("\n", 1)[0].rstrip(",;") + "\n(…selengkapnya di kemasan/official store)"
+
+
+def format_value(intent: str, raw, name: str = "", category: str = "", group: str = "") -> str | None:
     s = clean_text(raw)
     if intent == "harga":
         return format_price(raw)
@@ -161,6 +249,10 @@ def format_value(intent: str, raw, name: str = "", category: str = "") -> str | 
         return None
     if intent == "definisi":
         return definisi_value(name, category, s)
+    if intent == "detail":
+        return full_description(s)
+    if intent == "kategori":
+        return f"{s} ({group.lower()})" if group else s
     if intent == "kandungan":
         return format_ingredients(s)
     if intent == "keunggulan":
@@ -211,8 +303,28 @@ class Builder:
         """Jawaban fakta untuk (produk, intent); None kalau kolom kosong dan
         intent bukan yang wajib ditanya."""
         row = self.products[name]
-        value = format_value(intent, row.get(FIELD_BY_INTENT[intent]), name=name, category=clean_text(row.get("category")))
+        value = format_value(
+            intent, row.get(FIELD_BY_INTENT[intent]), name=name,
+            category=clean_text(row.get("category")), group=clean_text(row.get("group_category")),
+        )
         if value is None:
+            # Kolom kosong -> coba gali dari teks description dulu (dikutip apa adanya).
+            desc = clean_text(row.get("description"))
+            if intent == "kandungan" and desc:
+                sec = description_section(desc, ["Kandungan Utama", "Kandungan", "Specially Made With", "Key Ingredients"])
+                if sec:
+                    return self.pick(T.FACT_ANSWERS["kandungan"]).format(name=name, value=sec.replace(".\n", "\n").replace("\n", "; "))
+                sent = ingredient_sentence(desc)
+                if sent:
+                    return self.pick(T.FACT_ANSWERS["kandungan_dari_deskripsi"]).format(name=name, value=sent)
+            if intent == "keunggulan" and desc:
+                sec = description_section(desc, ["Keunggulan Produk", "Keunggulan", "What You'll Love", "What Youll Love", "Manfaat Produk", "Manfaat"])
+                if sec:
+                    return self.pick(T.FACT_ANSWERS["keunggulan"]).format(name=name, value=sec.replace("\n", "; "))
+            if intent == "aktivitas" and desc:
+                sec = description_section(desc, ["Cocok Untuk", "Suitable for", "Tipe kulit", "Sunscreen ini untuk kamu yang"])
+                if sec:
+                    return self.pick(T.FACT_ANSWERS["aktivitas"]).format(name=name, value=lower_first(sec.replace("\n", ", ")))
             if intent == "harga":
                 return self.pick(T.FACT_ANSWERS["harga_tidak_ada"]).format(name=name)
             if intent in ASK_EVEN_IF_EMPTY:
@@ -232,7 +344,8 @@ class Builder:
                 answer = self.fact_answer(name, intent)
                 if answer is None:
                     continue
-                qs = self.rng.sample(q_templates, min(questions_per_intent, len(q_templates)))
+                n_q = 1 if intent == "detail" else questions_per_intent
+                qs = self.rng.sample(q_templates, min(n_q, len(q_templates)))
                 for q in qs:
                     # Jawaban di-resample per pertanyaan supaya gaya kalimatnya ikut bervariasi.
                     self.add("fact", [(q.format(name=name), self.fact_answer(name, intent))], {"product": name, "intent": intent})
@@ -321,6 +434,38 @@ class Builder:
                 user = variants[i % len(variants)]
                 self.add("persona", [(user, a)], {"source": source})
 
+    def gen_emotional(self, answers_per_user: int = 2):
+        """Curhat topik di luar PDF: tiap kalimat user dipasangkan dengan
+        beberapa jawaban validasi (tanpa produk)."""
+        for topic, spec in T.EMOTIONAL_TOPICS.items():
+            for user in spec["user"]:
+                for a in self.rng.sample(spec["assistant"], min(answers_per_user, len(spec["assistant"]))):
+                    self.add("emotional", [(user, a)], {"topic": topic})
+
+    def gen_bridges(self, users_per_scenario: int = 3):
+        """Curhat (giliran 1, tanpa produk) -> user pivot ke kulit/penampilan
+        (giliran 2) -> validasi + rekomendasi ringan dari needs_mapping.csv."""
+        for sc in T.BRIDGE_SCENARIOS:
+            topic = T.EMOTIONAL_TOPICS.get(sc["topic"])
+            grp = self.needs[self.needs["need_id"] == sc["need_id"]].sort_values("prioritas")
+            if topic is None or grp.empty:
+                print(f"[warn] bridge dilewati: topic={sc['topic']} need_id={sc['need_id']}", file=sys.stderr)
+                continue
+            for user1 in self.rng.sample(topic["user"], min(users_per_scenario, len(topic["user"]))):
+                a1 = self.pick(topic["assistant"])
+                for user2 in sc["pivot_user"]:
+                    need_row = grp.iloc[0] if self.rng.random() < 0.7 or len(grp) == 1 else grp.iloc[self.rng.randrange(1, len(grp))]
+                    recommend = self.pick(T.RECOMMEND_FRAMES).format(product=need_row["product"], reason=lower_first(need_row["alasan"]))
+                    a2 = f"{self.pick(sc['bridge'])} {recommend} {self.pick(T.BRIDGE_FOLLOWUPS)}"
+                    turns = [(user1, a1), (user2, a2)]
+                    # Sesekali giliran ke-3: nanya harga/cara pakai produk yang baru disebut.
+                    if self.rng.random() < 0.3:
+                        intent = self.pick(["harga", "cara_pakai", "kandungan"])
+                        a3 = self.fact_answer(need_row["product"], intent)
+                        if a3:
+                            turns.append((self.pick(T.MULTITURN_FOLLOWUPS[intent]), a3))
+                    self.add("bridge", turns, {"topic": sc["topic"], "need_id": sc["need_id"], "product": need_row["product"]})
+
     def gen_guardrails(self, repeat: int = 2):
         for _ in range(repeat):
             for q, a in T.GUARDRAIL_QA:
@@ -333,7 +478,7 @@ class Builder:
                 a = self.pick(T.UNANSWERABLE_ANSWERS).format(name=name)
                 self.add("dont_know", [(q.format(name=name), a)], {"product": name})
 
-    def gen_vague(self, repeat: int = 2):
+    def gen_vague(self, repeat: int = 1):
         answers = self.persona[self.persona["source"] == "dont_know"]["assistant"].tolist()
         if not answers:
             return
@@ -439,6 +584,8 @@ def main():
     b.gen_need_recs(frames_per_example=args.rec_frames)
     b.gen_fact_multiturn()
     b.gen_persona(answers_per_sim=args.persona_per_sim)
+    b.gen_emotional()
+    b.gen_bridges()
     b.gen_guardrails()
     b.gen_dont_know()
     b.gen_vague()

@@ -116,9 +116,13 @@ system prompt default. **Evaluate** → upload `dataset/eval_realistic.csv`.
 Jenis baris yang dihasilkan (lihat `stats.json`): fakta per produk (jawaban kalimat natural,
 harga terformat `Rp50.000`, jujur kalau kolom kosong), daftar produk per kategori, curhat →
 empati + rekomendasi + alasan (+harga) + pertanyaan lanjutan, multi-turn ("harganya berapa?"
-setelah produk disebut), curhat murni tanpa produk (dari PDF), guardrail (self-harm, medis,
-ilegal, manipulasi), pertanyaan yang memang nggak bisa dijawab (stok/diskon), dan produk di luar
-katalog (jujur nggak ada). Semua fakta selalu dari katalog atau `needs_mapping.csv`, nggak ada
+setelah produk disebut), curhat murni tanpa produk (dari PDF + topik tambahan di
+`templates_id.py` seperti putus cinta, insecure penampilan, burnout), jembatan curhat → user pivot
+ke kulit/penampilan → rekomendasi ringan (multi-turn, produk tidak pernah ditawarkan di giliran
+curhat pertama), guardrail (self-harm, medis, ilegal, manipulasi), pertanyaan yang memang nggak
+bisa dijawab (stok/diskon), dan produk di luar katalog (jujur nggak ada). Kolom katalog yang kosong
+(kandungan, keunggulan, cocok untuk) dicoba diambil dari teks `description` dulu sebelum dijawab
+"belum ada data"; harga tidak punya fallback. Semua fakta selalu dari katalog atau `needs_mapping.csv`, nggak ada
 yang di-generate LLM, jadi nggak bisa ngarang produk.
 
 Yang perlu dirawat manual: `needs_mapping.csv` (kolom `alasan` harus tetap sesuai deskripsi
