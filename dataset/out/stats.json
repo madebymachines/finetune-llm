@@ -3,15 +3,15 @@
   "products": 51,
   "needs": 29,
   "system_prompt_chars": 421,
-  "rows_total": 1879,
-  "rows_train": 1785,
-  "rows_val": 94,
+  "rows_total": 2540,
+  "rows_train": 2411,
+  "rows_val": 129,
   "rows_by_kind": {
     "identity": 12,
-    "fact": 889,
+    "fact": 1554,
     "category_list": 45,
-    "need_rec": 302,
-    "need_rec_multi": 166,
+    "need_rec": 233,
+    "need_rec_multi": 235,
     "fact_multi": 152,
     "persona": 120,
     "emotional": 70,
@@ -19,14 +19,14 @@
     "guardrail": 19,
     "dont_know": 24,
     "vague": 8,
-    "out_of_catalog": 21
+    "out_of_catalog": 17
   },
   "chars_per_convo": {
     "min": 473,
-    "median": 680,
-    "p95": 1280,
-    "max": 2185,
-    "est_tokens_max": 728
+    "median": 641,
+    "p95": 1203,
+    "max": 2122,
+    "est_tokens_max": 707
   },
   "seed": 3407
 }

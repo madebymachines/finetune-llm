@@ -373,12 +373,16 @@ class Builder:
         else:
             recommend = self.pick(T.RECOMMEND_FRAMES).format(product=product, reason=lower_first(need_row["alasan"]))
             note = self.pick(T.PRICE_NOTES)
-            price_note = note.format(price=price) if (price and note) else ""
+            if price:
+                price_note = note.format(price=price) if note else ""
+            else:
+                # Harga kosong di katalog: 50% disebut jujur, 50% nggak disebut sama sekali.
+                price_note = self.pick(T.PRICE_UNKNOWN_NOTES) if self.rng.random() < 0.5 else ""
         layout = self.pick(T.ASSISTANT_REC_LAYOUTS)
         text = layout.format(empathy=empathy, recommend=recommend, price_note=price_note, followup=self.pick(T.FOLLOWUPS))
         return re.sub(r"[ ]{2,}", " ", text).replace(" \n", "\n").strip()
 
-    def gen_need_recs(self, frames_per_example: int = 3, multi_turn_ratio: float = 0.35):
+    def gen_need_recs(self, frames_per_example: int = 3, multi_turn_ratio: float = 0.5):
         for need_id, grp in self.needs.groupby("need_id", sort=False):
             grp = grp.sort_values("prioritas")
             examples = grp.iloc[0]["user_examples_list"]
@@ -399,11 +403,14 @@ class Builder:
                     turns = [(user, answer)]
                     kind = "need_rec"
                     if self.rng.random() < multi_turn_ratio and chosen["product"] in self.products:
-                        intent = self.pick(list(T.REC_FOLLOWUP_TURNS))
-                        follow_a = self.fact_answer(chosen["product"], intent)
-                        if follow_a:
-                            turns.append((self.pick(T.REC_FOLLOWUP_TURNS[intent]), follow_a))
-                            kind = "need_rec_multi"
+                        # 1-2 pertanyaan lanjutan pakai "nya" (harga, kandungan, shade, ...) —
+                        # persis alur user asli: rekomendasi -> "kandungannya?" -> "shade-nya?".
+                        n_follow = 2 if self.rng.random() < 0.5 else 1
+                        for intent in self.rng.sample(list(T.REC_FOLLOWUP_TURNS), n_follow):
+                            follow_a = self.fact_answer(chosen["product"], intent)
+                            if follow_a:
+                                turns.append((self.pick(T.REC_FOLLOWUP_TURNS[intent]), follow_a))
+                                kind = "need_rec_multi"
                     self.add(kind, turns, {"need_id": need_id, "product": chosen["product"]})
 
     def gen_fact_multiturn(self, per_product: int = 3):
@@ -560,7 +567,11 @@ def main():
     ap.add_argument("--out", default=str(OUT_DIR))
     ap.add_argument("--val-ratio", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=3407)
-    ap.add_argument("--fact-questions", type=int, default=2, help="variasi pertanyaan per (produk, intent)")
+    ap.add_argument(
+        "--fact-questions", type=int, default=4,
+        help="variasi pertanyaan per (produk, intent). Default 4: dengan 2, tiap fakta (mis. daftar shade satu "
+        "produk) cuma muncul 2x per epoch dan model kebukti mencampur shade/harga antar produk lip yang mirip.",
+    )
     ap.add_argument("--rec-frames", type=int, default=4, help="variasi bingkai kalimat per contoh keluhan")
     ap.add_argument("--persona-per-sim", type=int, default=12, help="jawaban curhat murni per simulasi PDF")
     args = ap.parse_args()

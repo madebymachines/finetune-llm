@@ -227,6 +227,13 @@ PRICE_NOTES = [
     "",
     "",
 ]
+# Produk yang harganya KOSONG di katalog: sesekali disebut jujur di rekomendasi,
+# supaya model nggak belajar "setiap rekomendasi selalu ditutup 'Harganya RpX'"
+# lalu ngisi angka karangan buat produk yang nggak ada harganya.
+PRICE_UNKNOWN_NOTES = [
+    "Harganya belum ada di data aku, cek official store Emina ya.",
+    "Soal harga aku nggak punya datanya buat produk ini, cek official store Emina.",
+]
 
 FOLLOWUPS = [
     "Kamu sekarang pakai rutinitas apa aja?",
