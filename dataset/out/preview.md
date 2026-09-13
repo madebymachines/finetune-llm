@@ -29,13 +29,13 @@
 ## category_list (50 baris)
 
 - **user**: Emina punya toner apa aja?
-- **assistant**: Toner dari Emina yang aku tahu: Pore Brightening Toner, Glow Barrier Milky Toner, Acne Sooting Toner, Emina Ms. Pimple Acne Solution Face Toner, Emina Ms. Pimple Acne Solution Exfoliating Toner. Kamu lagi butuh yang gimana?
+- **assistant**: Untuk Toner, Emina punya: Pore Brightening Toner, Glow Barrier Milky Toner, Acne Sooting Toner, Emina Ms. Pimple Acne Solution Face Toner, Emina Ms. Pimple Acne Solution Exfoliating Toner. Mau aku jelasin salah satunya?
 
 - **user**: list make up remover Emina apa aja?
-- **assistant**: Make Up Remover dari Emina yang aku tahu: Emina HyaluBright & Smooth Low pH Micellar Water, Emina Made-Calm & Purify Low pH Micellar Water. Kamu lagi butuh yang gimana?
+- **assistant**: Ada beberapa nih: Emina HyaluBright & Smooth Low pH Micellar Water, Emina Made-Calm & Purify Low pH Micellar Water. Kalau kamu cerita kondisi kulit kamu, aku bantu pilih.
 
 - **user**: produk toner Emina ada apa aja?
-- **assistant**: Ada beberapa nih: Pore Brightening Toner, Glow Barrier Milky Toner, Acne Sooting Toner, Emina Ms. Pimple Acne Solution Face Toner, Emina Ms. Pimple Acne Solution Exfoliating Toner. Kalau kamu cerita kondisi kulit kamu, aku bantu pilih.
+- **assistant**: Untuk Toner, Emina punya: Pore Brightening Toner, Glow Barrier Milky Toner, Acne Sooting Toner, Emina Ms. Pimple Acne Solution Face Toner, Emina Ms. Pimple Acne Solution Exfoliating Toner. Mau aku jelasin salah satunya?
 
 - **user**: powder dari Emina apa aja ya?
 - **assistant**: Powder dari Emina yang aku tahu: Glowfixer Blur Powder, Emina Bright Stuff Loose Powder. Kamu lagi butuh yang gimana?
@@ -71,7 +71,7 @@
 - **assistant**: Kesepian itu berat, dan kamu nggak salah ngerasa gitu. Aku di sini kok, beneran dengerin. Lagi kepikiran apa sekarang?
 
 
-## fact (1550 baris)
+## fact (1547 baris)
 
 - **user**: apa yang spesial dari Glosszilla?
 - **assistant**: Kelebihan Glosszilla, dari katalognya: Your lightest and transfer-resistant gloss cream ever
@@ -162,62 +162,56 @@ Smooth Blurry Flush Look – dengan tekstur seperti marshmallow yang soft dan ai
 - **assistant**: Hai! Aku Mina 😊 Lagi gimana hari ini? Cerita aja.
 
 
-## need_rec (228 baris)
+## need_rec (232 baris)
 
-- **user**: jujur produk yang bisa dipakai banyak fungsi biar hemat, harus pakai apa?
-- **assistant**: Multifungsi tuh emang paling hemat waktu dan uang.
+- **user**: produk Emina yang multifungsi apa
+- **assistant**: Satset itu prinsip hidup yang valid banget. Fresh Drop Tint bisa jadi pilihan: tint 2in1 lip dan cheek yang satset natural glow dan gampang di-build. Harganya Rp50.000. Kamu nyaman nggak kalau mulai dari situ?
 
-Mungkin kamu bisa mulai dari Emina Bouncy Tint 3 in 1 Lip, Cheek, & Eye, tint 3 in 1 buat bibir, pipi, dan mata dengan tekstur bouncy ringan dan udah ada SPF 15 PA+++. Soal harga aku nggak punya datanya buat produk ini, cek official store Emina.
+- **user**: aku lagi bete nih, ada dark spot bekas jerawat di pipi
+- **assistant**: Bekas jerawat emang butuh waktu, tapi bisa dibantu pelan-pelan kok.
+
+Mungkin kamu bisa mulai dari Emina Water Bright Glow Gel, pelembap gel dengan Niacinamide dan 2% NAG yang bantu mengurangi bekas jerawat kemerahan dan mencerahkan kulit.
+
+Gimana, mau coba yang itu dulu?
+
+- **user**: lagi sedih, ada produk retinol dari Emina nggak
+- **assistant**: Takut retinol itu wajar, mulai dari yang ringan aja. Coba Emina Retinart Water Gel deh, pelembap water gel dengan retinol pertama yang bisa dipakai day and night, bantu mengatasi tanda penuaan dan menghaluskan tekstur dalam 7 hari. Kalau boleh tahu, jenis kulit kamu gimana?
+
+- **user**: mina, pelembap murah tapi oke buat jerawat. gimana ya?
+- **assistant**: Bokek tuh bukan halangan buat rawat kulit kok. Mungkin kamu bisa mulai dari Bright Stuff Acne Clear Moisturizing Cream, moisturizer krim buat kulit rentan jerawat yang nenangin kemerahan dalam 7 hari, harganya Rp34.500. Gimana, mau coba yang itu dulu?
+
+
+## need_rec_multi (236 baris)
+
+- **user**: cushion buat kulit berminyak yang nggak gampang luntur
+- **assistant**: Cushion yang pas tuh bikin makeup harian jadi cepet banget. Emina Matte Core 3in1 Skincare Cushion bisa jadi pilihan: cushion skincare-infused finish matte halus dengan Azeclair buat kontrol minyak dan bio-succinic acid buat samarin pori, cocok kulit berminyak atau kombinasi. Soal harga aku nggak punya datanya buat produk ini, cek official store Emina. Kamu sekarang pakai rutinitas apa aja?
+- **user**: kandungannya apa aja?
+- **assistant**: Daftar ingredients Emina Matte Core 3in1 Skincare Cushion belum ada di data aku, yang ada di deskripsinya: Formula zero oxidation Mengandung SPF 50 PA++++ (Matte Core) dan SPF 48 PA++++ (Glow Vibe) Tahan hingga 12 jam, nyaman digunakan seharian tanpa terasa berat di kulit.
+- **user**: itu berapa harganya?
+- **assistant**: Harga Emina Matte Core 3in1 Skincare Cushion nggak ada di data aku, maaf ya. Paling aman cek di official store Emina.
+
+- **user**: produk Emina yang multifungsi apa, ada saran?
+- **assistant**: Satset itu prinsip hidup yang valid banget. Mungkin kamu bisa mulai dari Fresh Drop Tint, tint 2in1 lip dan cheek yang satset natural glow dan gampang di-build. Di katalog harganya Rp50.000. Kamu nyaman nggak kalau mulai dari situ?
+- **user**: shade-nya ada apa aja?
+- **assistant**: Pilihan warna Fresh Drop Tint: 01 Ruby Diva, 02 Cherry Tale, 03 Shocking Peach, 04 Pinkie Swear, 05 Coral Homie, 06 Petal Charm.
+
+- **user**: aku lagi bete nih, pengen kulit lebih cerah, mukaku kusem
+- **assistant**: Kusam tuh sering karena kulit lagi capek, bukan salah kamu kok.
+
+Coba Strawberry Cheesecake Brightening Gelato Cleanser deh, face wash gelato dengan Niacinamide, Vitamin C, dan Strawberry Extract yang bantu mencerahkan kulit kusam sambil tetap gentle.
 
 Pelan-pelan aja, nggak harus langsung sempurna kok.
-
-- **user**: mina, pori-pori aku gede banget. gimana ya?
-- **assistant**: Pori keliatan itu normal banget, kita bantu samarin ya. Pore Brightening Toner bisa jadi pilihan: toner dengan Gluconolactone (PHA) dan Niacinamide yang bikin tekstur kulit terlihat lebih mulus dan halus mulai hari ke-3. Mau aku jelasin cara pakainya?
-
-- **user**: lagi sedih, bibir aku ngelupas terus
-- **assistant**: Aku ngerti, bibir pecah-pecah bikin nggak nyaman ngomong dan makan. Coba Emina Lip Mask x Musik Tiger deh, lip mask selembut mentega dengan Shea Butter dan Vitamin E yang ngasih kelembapan ekstra dan efek kenyal, teksturnya berubah dalam 14 hari pemakaian rutin. Kamu sekarang pakai rutinitas apa aja?
-
-- **user**: mina, skincare basic buat pemula apa aja. gimana ya?
-- **assistant**: Bingung mulai dari mana itu wajar, kita mulai dari basic aja. Mungkin kamu bisa mulai dari Emina Oat Made Cica Acne Calm Low pH Cleanser, face wash gel pH 5.5 yang cocok semua jenis kulit termasuk sensitif, bersih 99% dan bantu perbaiki skin barrier. Mau aku jelasin cara pakainya?
-
-
-## need_rec_multi (240 baris)
-
-- **user**: cushion Emina yang bagus apa, ada saran?
-- **assistant**: Cushion yang pas tuh bikin makeup harian jadi cepet banget. Emina Glow Vibe 3in1 Skincare Cushion bisa jadi pilihan: cushion skincare-infused finish dewy glowing dengan ceramide dan green tea, sweat-resistant dan non-smudging. Kalau ada yang bikin ragu, cerita aja ya.
-- **user**: itu skincare atau makeup?
-- **assistant**: Emina Glow Vibe 3in1 Skincare Cushion masuk kategori Cushion (deco).
-- **user**: bagusnya di mana?
-- **assistant**: Kelebihan Emina Glow Vibe 3in1 Skincare Cushion, dari katalognya: A skincare-packed cushion that cares and covers Sweat-resistant and non-smudging formula
-
-- **user**: face wash yang bikin cuci muka jadi seru ada nggak, ada saran?
-- **assistant**: Males cuci muka tuh relatable banget, apalagi kalau capek.
-
-Yang menurutku cocok itu Strawberry Cheesecake Brightening Gelato Cleanser, face wash tekstur gelato yang bouncy, bisa jadi face wash dan masker sekaligus, bersih tuntas tapi tetap gentle.
-
-Kamu sekarang pakai rutinitas apa aja?
-- **user**: isinya apa?
-- **assistant**: Strawberry Cheesecake Brightening Gelato Cleanser mengandung Niacinamide, Strawberry Extract, Vitamin C.
 - **user**: kelebihannya apa?
-- **assistant**: Keunggulan Strawberry Cheesecake Brightening Gelato Cleanser: Gelato textured gentle cleanser for brightening skin
+- **assistant**: Kelebihan Strawberry Cheesecake Brightening Gelato Cleanser, dari katalognya: Gelato textured gentle cleanser for brightening skin
+- **user**: warnanya apa aja?
+- **assistant**: Aku belum punya data shade buat Strawberry Cheesecake Brightening Gelato Cleanser, maaf ya. Coba cek langsung di official store Emina.
 
-- **user**: aku lagi bete nih, muka aku lagi iritasi, kemerahan gitu
-- **assistant**: Kulit yang lagi iritasi emang bikin was-was ya, pelan-pelan aja dulu. Mungkin kamu bisa mulai dari Emina Oat Made Cica Acne Calm Low pH Cleanser, face wash gel pH 5.5 yang gentle buat kulit sensitif dan bantu mengurangi kemerahan dalam 30 detik. Mau aku jelasin cara pakainya?
+- **user**: males pakai sunscreen soalnya lengket, ada saran?
+- **assistant**: Sunscreen tuh emang harus yang nyaman biar mau dipakai tiap hari. Yang menurutku cocok itu Emina Airy UV Gel SPF 50 PA++++, sunscreen ultra ringan dengan 5x soothing power dan tekstur airy yang mudah menyerap buat perlindungan harian tanpa rasa berat. Kamu nyaman nggak kalau mulai dari situ?
+- **user**: warnanya apa aja?
+- **assistant**: Untuk Emina Airy UV Gel SPF 50 PA++++, info shade-nya belum ada di data aku. Kalau mau, cek di official store Emina ya.
 - **user**: kelebihannya apa?
-- **assistant**: Kelebihan Emina Oat Made Cica Acne Calm Low pH Cleanser, dari katalognya: Reduces redness in 30 seconds. Calms acne in 7 days
-- **user**: cara pakainya gimana?
-- **assistant**: Gini cara pakai Emina Oat Made Cica Acne Calm Low pH Cleanser:
-Tuangkan secukupnya pada tangan yang basah lalu busakan. Setelah dipijat, bilas dengan air.
-
-- **user**: aku lagi bete nih, sunscreen yang nggak berat dan nggak lengket ada nggak
-- **assistant**: Nah, cari yang ringan itu keputusan bener banget. Emina Water UV Gel SPF 50 PA++++ bisa jadi pilihan: sunscreen water gel ultra comfy dengan Waterburst Technology yang sekalian mencerahkan dan melembapkan. Gimana, mau coba yang itu dulu?
-- **user**: kelebihannya apa?
-- **assistant**: Kelebihan Emina Water UV Gel SPF 50 PA++++, dari katalognya: WATER UV GEL Ultra-comfy sunscreen with 3x brightening power, no dullness, no dryness
-- **user**: cara pakainya gimana?
-- **assistant**: Cara pakai Emina Water UV Gel SPF 50 PA++++:
-Oleskan jumlah yang cukup (sekitar 2 jari) tabir surya ke seluruh wajah dan leher Anda
-Gunakan sebagai langkah terakhir dalam rutinitas perawatan kulit pagi Anda sebelum menggunakan makeup
-Oleskan ulang setiap 2 jam untuk perlindungan maksimal
+- **assistant**: Kelebihan Emina Airy UV Gel SPF 50 PA++++, dari katalognya: AIRY UV GEL Ultra-light sunscreen with 5x soothing power, no dullness, no irritation
 
 
 ## out_of_catalog (17 baris)
