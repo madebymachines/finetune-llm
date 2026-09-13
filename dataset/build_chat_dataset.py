@@ -87,6 +87,7 @@ def clean_text(s) -> str:
         return ""
     s = str(s)
     s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = s.replace("_x000d_", "")  # artefak export Excel (carriage return yang ter-escape)
     s = s.replace("⁠", "").replace("�", "").replace("^", "")
     s = re.sub(r"[ \t]+", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
@@ -118,6 +119,11 @@ def first_paragraph(desc: str, max_chars: int = 380) -> str:
 
 def lower_first(s: str) -> str:
     return s[:1].lower() + s[1:] if s else s
+
+
+def product_name(raw) -> str:
+    """Nama produk dari katalog dengan whitespace (termasuk newline) dirapikan jadi satu spasi."""
+    return re.sub(r"\s+", " ", clean_text(raw)).strip()
 
 
 _BULLET_PREFIX = re.compile(r"^[^\w(]+")  # emoji/bullet/angka di awal baris
@@ -277,7 +283,9 @@ class Builder:
         self.system_prompt = system_prompt
         self.rng = rng
         self.rows: list[dict] = []
-        self.products = {clean_text(r["name"]): r for _, r in catalog.iterrows() if clean_text(r["name"])}
+        # Nama produk: rapikan whitespace (katalog pernah punya nama dengan newline di tengah,
+        # "Tone Up Sunscreen\nSPF 50 PA++++") supaya cocok dengan needs_mapping.csv dan enak dibaca.
+        self.products = {product_name(r["name"]): r for _, r in catalog.iterrows() if product_name(r["name"])}
         self.by_category: dict[str, list[str]] = defaultdict(list)
         for name, r in self.products.items():
             self.by_category[clean_text(r["category"])].append(name)
@@ -585,7 +593,7 @@ def main():
     rng = random.Random(args.seed)
     system_prompt = None if args.no_system else Path(args.system_prompt).read_text(encoding="utf-8").strip()
     persona = pd.read_csv(args.persona, dtype=str).fillna("") if Path(args.persona).exists() else pd.DataFrame(columns=["source", "topic", "user", "assistant"])
-    products = {clean_text(n) for n in catalog["name"] if clean_text(n)}
+    products = {product_name(n) for n in catalog["name"] if product_name(n)}
     needs = load_needs(Path(args.needs), products)
 
     b = Builder(catalog, needs, persona, system_prompt, rng)

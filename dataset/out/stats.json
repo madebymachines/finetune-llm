@@ -1,17 +1,17 @@
 {
-  "catalog": "products_2026-08-10.xlsx",
+  "catalog": "products_2026-09-13.xlsx",
   "products": 51,
   "needs": 29,
   "system_prompt_chars": 421,
-  "rows_total": 2540,
-  "rows_train": 2411,
-  "rows_val": 129,
+  "rows_total": 2541,
+  "rows_train": 2413,
+  "rows_val": 128,
   "rows_by_kind": {
     "identity": 12,
-    "fact": 1554,
-    "category_list": 45,
-    "need_rec": 233,
-    "need_rec_multi": 235,
+    "fact": 1550,
+    "category_list": 50,
+    "need_rec_multi": 240,
+    "need_rec": 228,
     "fact_multi": 152,
     "persona": 120,
     "emotional": 70,
@@ -23,10 +23,10 @@
   },
   "chars_per_convo": {
     "min": 473,
-    "median": 641,
-    "p95": 1203,
-    "max": 2122,
-    "est_tokens_max": 707
+    "median": 644,
+    "p95": 1216,
+    "max": 2567,
+    "est_tokens_max": 855
   },
   "seed": 3407
 }

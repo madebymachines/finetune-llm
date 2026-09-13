@@ -1,5 +1,5 @@
 id,kategori,history,prompt,expected_keywords,catatan
-1,curhat_rekomendasi,,"aku lagi bete nih, kulitku kering banget",Glow Barrier Milky/Water Barrier Balancing Gel/Oat Amino Barrier,kasus yang gagal di riset sebelumnya; harus ada empati + produk + alasan
+1,curhat_rekomendasi,,"aku lagi bete nih, kulitku kering banget",Glow Barrier Milky/Water Barrier Balancing Gel/Oat Made Cica,kasus yang gagal di riset sebelumnya; harus ada empati + produk + alasan
 2,curhat_rekomendasi,,"kak aku sedih, jerawatku makin banyak, harus pakai apa ya",Acne Sooting/Acne Clear Expert/Cica Triacid/Matcha Latte,
 3,curhat_rekomendasi,,"mukaku kusem banget abis begadang, ada yang bisa bikin cerah?",Strawberry Cheesecake/Pore Brightening/Water Bright Glow/Niacinamide Oxy Ceramide,
 4,curhat_rekomendasi,,"besok ada acara, pengen bibir keliatan glossy tapi nggak lengket",Glosszilla/Jelly Stain/Plumpy Pop,
@@ -7,10 +7,10 @@ id,kategori,history,prompt,expected_keywords,catatan
 6,curhat_rekomendasi,,"sunscreen bikin muka aku abu abu, males jadinya",Sun Battle Bright Glow/Airy UV Gel/Tone Up Sunscreen,
 7,curhat_rekomendasi,,"bibirku pecah-pecah parah, sakit",Lip Mask/Hyalupeptide/Oh So Kissable,
 8,curhat_rekomendasi,,"aku cuma punya 30rb, bisa beli skincare emina apa",Bright Stuff for Acne Prone Skin|Rp28.500,harus sebut harga yang benar
-9,curhat_rekomendasi,,"kulitku merah-merah abis cobain produk temen",Water Calming Gel/Oat Made Cica/Matcha Latte,
+9,curhat_rekomendasi,,kulitku merah-merah abis cobain produk temen,Water Calming Gel/Oat Made Cica/Matcha Latte,
 10,curhat_rekomendasi,,"bekas jerawat di pipi aku item-item, pengen ilang",Advanced Bright/Water Bright Glow/Prebiotic Tranexamic,
-11,curhat_rekomendasi,,"muka aku minyakan parah kalo siang",Acne Sooting/Water Calming Gel/Bright Stuff Loose/Made-Calm,
-12,curhat_rekomendasi,,"aku baru mau mulai skincare tapi bingung mulai dari mana",Oat Amino Barrier/Bright Stuff Ultra-Light/Sun Battle Bright Glow,
+11,curhat_rekomendasi,,muka aku minyakan parah kalo siang,Acne Sooting/Water Calming Gel/Bright Stuff Loose/Made-Calm/Glowfixer,
+12,curhat_rekomendasi,,aku baru mau mulai skincare tapi bingung mulai dari mana,Oat Made Cica/Bright Stuff Ultra-Light/Sun Battle Bright Glow,
 13,fakta_parafrase,,eh fresh drop tint tuh apaan sih,buildable,parafrase kasual dari pertanyaan definisi
 14,fakta_parafrase,,berapaan fresh drop tint?,Rp50.000,harga harus terformat rupiah
 15,fakta_parafrase,,fresh drop tint bisa dipake buat aktivitas apa aja,sekolah|Pilates|yoga,
@@ -24,7 +24,7 @@ id,kategori,history,prompt,expected_keywords,catatan
 23,multi_turn,"[{""role"":""user"",""content"":""fresh drop tint itu apa""},{""role"":""assistant"",""content"":""Fresh Drop Tint itu produk lip dari Emina. Liptint dengan buildable intensity untuk bibir tampak lebih merata dan sehat sesuai yang kamu inginkan!""}]",harganya berapa,Rp50.000,"""nya"" harus merujuk ke Fresh Drop Tint"
 24,multi_turn,"[{""role"":""user"",""content"":""kulitku kering banget""},{""role"":""assistant"",""content"":""Kulit kering emang bikin nggak nyaman seharian ya 😔 Coba Glow Barrier Milky deh, toner ini fokus menghidrasi dan menguatkan skin barrier. Kamu sekarang pakai rutinitas apa aja?""}]",kandungannya apa,Cerabarrier|Hyaluron|Rice,
 25,multi_turn,"[{""role"":""user"",""content"":""sunscreen emina apa aja""},{""role"":""assistant"",""content"":""Untuk Sunscreen, Emina punya: Tone Up Sunscreen SPF 50 PA++++, Emina Sun Battle SPF Acne Clear SPF 35 PA +++, Emina Airy UV Gel SPF 50 PA++++, Emina Water UV Gel SPF 50 PA++++, Emina Sun Battle Bright Glow SPF 35 PA+++. Mau aku jelasin salah satunya?""}]",yang tone up itu harganya berapa,Rp67.000,
-26,multi_turn,"[{""role"":""user"",""content"":""aku jerawatan""},{""role"":""assistant"",""content"":""Aku ngerti banget, jerawat tuh bisa bikin percaya diri luntur. Coba Acne Sooting deh, toner dengan Cicaclear BHA Complex yang menenangkan kemerahan jerawat. Kamu nyaman nggak kalau mulai dari situ?""}]",cara pakenya gimana,official store/belum/nggak ada,Acne Sooting tidak punya cara_pakai di katalog; harus jujur
+26,multi_turn,"[{""role"":""user"",""content"":""aku jerawatan""},{""role"":""assistant"",""content"":""Aku ngerti banget, jerawat tuh bisa bikin percaya diri luntur. Coba Acne Sooting deh, toner dengan Cicaclear BHA Complex yang menenangkan kemerahan jerawat. Kamu nyaman nggak kalau mulai dari situ?""}]",cara pakenya gimana,official store/belum/nggak ada,Acne Sooting Toner tidak punya cara_pakai di katalog; harus jujur
 27,multi_turn,"[{""role"":""user"",""content"":""glosszilla warnanya apa aja""},{""role"":""assistant"",""content"":""Shade Glosszilla ada: 01 Redwood Remix, 02 Tangerine Check, 03 Peach Chill, 04 Giving Mocca, 05 Demure Petal, 06 Rosy Era, 07 Pink Aesthetic, 08 Mauve Math.""}]",itu harganya?,official store/belum/nggak ada,Glosszilla tidak punya harga di katalog; jangan ngarang angka
 28,multi_turn,"[{""role"":""user"",""content"":""aku males cuci muka""},{""role"":""assistant"",""content"":""Males cuci muka tuh relatable banget. Coba Strawberry Cheesecake Brightening Gelato deh, face wash tekstur gelato yang bisa jadi masker juga. Mau aku jelasin cara pakainya?""}]",harganya?,Rp39.000,
 29,out_of_catalog,,emina ada shampoo ga,belum/nggak ada/nggak punya,tidak boleh mengarang produk
