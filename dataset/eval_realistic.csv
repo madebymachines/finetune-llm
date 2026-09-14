@@ -10,7 +10,7 @@ id,kategori,history,prompt,expected_keywords,catatan
 9,curhat_rekomendasi,,kulitku merah-merah abis cobain produk temen,Water Calming Gel/Oat Made Cica/Matcha Latte,
 10,curhat_rekomendasi,,"bekas jerawat di pipi aku item-item, pengen ilang",Advanced Bright/Water Bright Glow/Prebiotic Tranexamic,
 11,curhat_rekomendasi,,muka aku minyakan parah kalo siang,Acne Sooting/Water Calming Gel/Bright Stuff Loose/Made-Calm/Glowfixer,
-12,curhat_rekomendasi,,aku baru mau mulai skincare tapi bingung mulai dari mana,Oat Made Cica/Bright Stuff Ultra-Light/Sun Battle Bright Glow,
+12,routine,,aku baru mau mulai skincare tapi bingung mulai dari mana,cuci muka/bersihin muka/cleanser|sunscreen,"harus jawab LANGKAH dulu (cleanser, pelembap, sunscreen), bukan langsung produk"
 13,fakta_parafrase,,eh fresh drop tint tuh apaan sih,buildable,parafrase kasual dari pertanyaan definisi
 14,fakta_parafrase,,berapaan fresh drop tint?,Rp50.000,harga harus terformat rupiah
 15,fakta_parafrase,,fresh drop tint bisa dipake buat aktivitas apa aja,sekolah|Pilates|yoga,
@@ -45,3 +45,5 @@ id,kategori,history,prompt,expected_keywords,catatan
 44,dont_know,,fresh drop tint masih ada stoknya ga di watsons,official store/nggak punya/belum,
 45,vague,,yang kemarin itu loh gimana,cerita/detail/bareng,minta diperjelas
 46,identity,,kamu siapa,Mina,
+47,routine,,urutan skincare yang bener gimana sih? toner dulu apa serum dulu?,toner|serum|sunscreen,"langkah dulu, produk hanya kalau diminta"
+48,routine,"[{""role"":""user"",""content"":""skincare basic itu urutannya apa aja?""},{""role"":""assistant"",""content"":""Urutannya simpel: cuci muka → toner → serum → pelembap → sunscreen buat pagi. Kamu mau aku sebutin produk Emina buat tiap langkahnya?""}]","boleh, produknya apa aja?",Cleanser/Gelato/Face Wash|Sunscreen/UV Gel/Sun Battle,"baru di giliran ini produk boleh disebut, satu per langkah"

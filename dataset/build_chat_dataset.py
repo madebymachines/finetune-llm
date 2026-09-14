@@ -26,6 +26,10 @@ Jenis baris yang dibuat (kolom "kind" di stats):
   out_of_catalog  produk yang nggak ada di katalog -> jujur
   emotional       curhat topik di luar PDF (putus, insecure, burnout, ...) tanpa produk
   bridge          curhat -> user pivot ke kulit/penampilan -> rekomendasi ringan (multi-turn)
+  bridge_soft     seperti bridge, tapi giliran pivot dijawab langkah dasar TANPA produk +
+                  tanya dulu; produk baru muncul kalau user bilang mau (giliran 3)
+  routine         urutan/rutinitas skincare -> langkah per kategori tanpa produk;
+                  giliran 2 user minta produk -> satu produk per langkah dari katalog
 
 Kolom katalog yang kosong TIDAK langsung dijawab "nggak ada data": kandungan,
 keunggulan, dan "cocok untuk" dicoba diambil dulu dari teks description
@@ -471,6 +475,16 @@ class Builder:
                 for user2 in sc["pivot_user"]:
                     need_row = grp.iloc[0] if self.rng.random() < 0.7 or len(grp) == 1 else grp.iloc[self.rng.randrange(1, len(grp))]
                     recommend = self.pick(T.RECOMMEND_FRAMES).format(product=need_row["product"], reason=lower_first(need_row["alasan"]))
+                    if self.rng.random() < 0.5:
+                        # Versi lembut: langkah dasar dulu tanpa produk, tanya mau disaranin atau nggak.
+                        a2 = self.pick(T.BRIDGE_SOFT_ANSWERS).format(bridge=self.pick(sc["bridge"]))
+                        turns = [(user1, a1), (user2, a2)]
+                        if self.rng.random() < 0.75:
+                            turns.append((self.pick(T.BRIDGE_SOFT_YES), f"{recommend} {self.pick(T.BRIDGE_FOLLOWUPS)}"))
+                        else:
+                            turns.append((self.pick(T.BRIDGE_SOFT_NO), self.pick(T.BRIDGE_SOFT_NO_ANSWERS)))
+                        self.add("bridge_soft", turns, {"topic": sc["topic"], "need_id": sc["need_id"], "product": need_row["product"]})
+                        continue
                     a2 = f"{self.pick(sc['bridge'])} {recommend} {self.pick(T.BRIDGE_FOLLOWUPS)}"
                     turns = [(user1, a1), (user2, a2)]
                     # Sesekali giliran ke-3: nanya harga/cara pakai produk yang baru disebut.
@@ -480,6 +494,37 @@ class Builder:
                         if a3:
                             turns.append((self.pick(T.MULTITURN_FOLLOWUPS[intent]), a3))
                     self.add("bridge", turns, {"topic": sc["topic"], "need_id": sc["need_id"], "product": need_row["product"]})
+
+    def _routine_steps(self, order: list[str]) -> str:
+        """'cuci muka -> toner -> serum -> pelembap -> sunscreen', hanya kategori yang ada di katalog."""
+        labels = [T.ROUTINE_STEP_LABELS[c] for c in order if c in self.by_category]
+        return " → ".join(labels)
+
+    def _routine_products(self, order: list[str]) -> str:
+        """Satu produk per langkah, diambil dari katalog (utamakan prioritize_product=True)."""
+        lines = []
+        for cat in order:
+            names = self.by_category.get(cat, [])
+            if not names:
+                continue
+            prio = [n for n in names if str(self.products[n].get("prioritize_product", "")).strip().lower() in ("true", "1", "1.0", "yes", "ya")]
+            chosen = self.pick(prio or names)
+            price = format_price(self.products[chosen].get("price"))
+            lines.append(f"- {T.ROUTINE_STEP_LABELS[cat].capitalize()}: {chosen}" + (f" ({price})" if price else ""))
+        return "\n".join(lines)
+
+    def gen_routine(self, repeat: int = 3, product_turn_ratio: float = 0.6):
+        pagi, malam = self._routine_steps(T.ROUTINE_ORDER_PAGI), self._routine_steps(T.ROUTINE_ORDER_MALAM)
+        for _ in range(repeat):
+            for q in T.ROUTINE_QUESTIONS:
+                offer = self.pick(T.ROUTINE_OFFERS)
+                tmpl = self.pick(T.ROUTINE_ANSWERS_SPECIFIC.get(q, T.ROUTINE_ANSWERS))
+                a1 = tmpl.format(steps_pagi=pagi, steps_malam=malam, offer=offer).strip()
+                turns = [(q, a1)]
+                if self.rng.random() < product_turn_ratio:
+                    a2 = self.pick(T.ROUTINE_PRODUCT_ANSWERS).format(product_steps=self._routine_products(T.ROUTINE_ORDER_PAGI))
+                    turns.append((self.pick(T.ROUTINE_PRODUCT_REQUESTS), a2))
+                self.add("routine", turns)
 
     def gen_guardrails(self, repeat: int = 2):
         for _ in range(repeat):
@@ -605,6 +650,7 @@ def main():
     b.gen_persona(answers_per_sim=args.persona_per_sim)
     b.gen_emotional()
     b.gen_bridges()
+    b.gen_routine()
     b.gen_guardrails()
     b.gen_dont_know()
     b.gen_vague()

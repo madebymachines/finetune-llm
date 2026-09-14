@@ -694,3 +694,87 @@ BRIDGE_FOLLOWUPS = [
     "Kalau mau, nanti aku jelasin cara pakainya.",
     "Dan ingat, ini buat kamu, bukan buat siapa-siapa.",
 ]
+
+
+# ---------------------------------------------------------------------------
+# 12. Urutan / rutinitas skincare — dijawab LANGKAH dulu (per kategori katalog),
+#     tanpa produk. Produk baru disebut kalau user minta di giliran berikutnya.
+#     {steps_pagi} / {steps_malam} diisi builder dari kategori yang ada di katalog.
+# ---------------------------------------------------------------------------
+ROUTINE_QUESTIONS = [
+    "urutan skincare yang benar itu gimana?",
+    "aku masih bingung urutan perawatan kulit yang benar dimulai dari mana",
+    "kasih saran urutan rutinitas skincare yang pas buat sehari-hari dong",
+    "skincare basic itu urutannya apa aja?",
+    "step skincare pagi sama malam bedanya apa?",
+    "rutinitas skincare pemula yang simpel gimana?",
+    "kalau baru mulai skincare, urutannya dari apa dulu?",
+    "sunscreen itu dipakai sebelum atau sesudah moisturizer?",
+    "toner dulu atau serum dulu?",
+    "berapa langkah skincare yang cukup buat anak sekolah?",
+]
+ROUTINE_ANSWERS = [
+    "Nggak perlu ribet kok. Urutan dasarnya gini:\n\nPagi: {steps_pagi}.\nMalam: {steps_malam}.\n\nPrinsipnya dari tekstur paling ringan ke paling berat, dan sunscreen selalu paling akhir di pagi hari. Kalau baru mulai, tiga langkah aja udah cukup: bersihin muka, pelembap, sunscreen. {offer}",
+    "Oke, ini urutan yang aman buat sehari-hari:\n\n☀️ Pagi: {steps_pagi}.\n🌙 Malam: {steps_malam}.\n\nMulai dari yang basic dulu, jangan langsung semua step. {offer}",
+    "Urutannya simpel: {steps_pagi} buat pagi, dan {steps_malam} buat malam. Sunscreen cuma pagi, dan malam fokus bersihin sisa sunscreen atau makeup. Nggak harus lengkap dari awal, yang penting konsisten. {offer}",
+]
+ROUTINE_ANSWERS_SPECIFIC = {
+    "sunscreen itu dipakai sebelum atau sesudah moisturizer?": [
+        "Sesudah moisturizer ya. Urutan paginya: {steps_pagi}. Sunscreen selalu langkah terakhir sebelum makeup, dan dipakai cukup banyak biar proteksinya beneran kerasa. {offer}",
+    ],
+    "toner dulu atau serum dulu?": [
+        "Toner dulu, baru serum. Toner nyiapin kulit dan bantu serum nyerap lebih baik. Urutan lengkapnya: {steps_pagi} di pagi hari. {offer}",
+    ],
+}
+ROUTINE_OFFERS = [
+    "Kamu mau aku sebutin produk Emina buat tiap langkahnya?",
+    "Kalau mau, aku bisa saranin produk Emina per langkah, tinggal bilang jenis kulit kamu.",
+    "Jenis kulit kamu gimana? Biar kalau kamu mau, aku bisa cocokin produknya.",
+    "",
+]
+ROUTINE_PRODUCT_REQUESTS = [
+    "boleh, produknya apa aja buat tiap step?",
+    "iya mau, dari Emina apa aja?",
+    "kasih rekomendasi produknya dong",
+    "produk Emina buat urutan itu apa aja ya?",
+    "oke, sebutin produknya",
+]
+ROUTINE_PRODUCT_ANSWERS = [
+    "Oke, satu contoh per langkah dari katalog Emina:\n{product_steps}\n\nIni cuma contoh ya, nggak harus semuanya dibeli sekaligus. Mau aku jelasin salah satunya?",
+    "Ini pilihan per langkah, semua dari Emina:\n{product_steps}\n\nMulai dari cleanser sama sunscreen dulu juga udah bagus. Ada yang mau ditanyain lebih detail?",
+]
+ROUTINE_STEP_LABELS = {
+    "Make Up Remover": "hapus makeup/sunscreen",
+    "Cleanser": "cuci muka",
+    "Toner": "toner",
+    "Serum": "serum",
+    "Moisturizer": "pelembap",
+    "Sunscreen": "sunscreen",
+}
+ROUTINE_ORDER_PAGI = ["Cleanser", "Toner", "Serum", "Moisturizer", "Sunscreen"]
+ROUTINE_ORDER_MALAM = ["Make Up Remover", "Cleanser", "Toner", "Serum", "Moisturizer"]
+
+# ---------------------------------------------------------------------------
+# 13. Jembatan versi LEMBUT: user pivot ke "harus mulai rawat diri nggak ya?"
+#     -> dorongan + langkah dasar TANPA produk + tanya dulu mau disaranin produk
+#     atau nggak. Produk baru muncul kalau user jawab mau.
+# ---------------------------------------------------------------------------
+BRIDGE_SOFT_ANSWERS = [
+    "{bridge} Kalau mau mulai, basic-nya cuma tiga: bersihin muka, pelembap, dan sunscreen di pagi hari. Konsisten seminggu dulu, itu udah langkah besar. Mau aku saranin produk Emina buat mulainya?",
+    "{bridge} Nggak usah langsung banyak step. Cukup cuci muka, pelembap, sunscreen. Kalau kamu mau, aku bisa cocokin produknya sama kondisi kulit kamu, tapi nggak harus sekarang.",
+    "{bridge} Mulai dari yang paling gampang dijalanin tiap hari: bersihin muka pagi-malam, pelembap, sunscreen. Kalau kamu pengen, aku bantu pilihin produknya?",
+]
+BRIDGE_SOFT_YES = [
+    "boleh, saranin dong",
+    "iya mau, apa ya?",
+    "oke, aku mau coba. mulai dari apa?",
+    "kasih tau produknya dong",
+]
+BRIDGE_SOFT_NO = [
+    "belum dulu deh, aku mau cerita aja",
+    "nanti aja produknya, aku masih pengen ngobrol",
+]
+BRIDGE_SOFT_NO_ANSWERS = [
+    "Oke, nggak apa-apa banget. Aku di sini kok, lanjut cerita aja. Tadi kamu bilang lagi ngerasa gimana?",
+    "Sip, produknya nanti aja kalau kamu udah siap. Sekarang ceritain dulu yang lagi ganjel, aku dengerin.",
+]
